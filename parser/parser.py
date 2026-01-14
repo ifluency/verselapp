@@ -22,6 +22,7 @@ FINAL_COLUMNS = [
 
 
 def clean_spaces(s: str) -> str:
+    """Normaliza espaços para evitar quebra de layout."""
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
@@ -45,6 +46,10 @@ def is_noise_line(line: str) -> bool:
 
 
 def looks_like_row(line: str) -> bool:
+    """
+    Detecta se uma linha parece registro da tabela:
+    começa com Nº e Inciso romano, termina com Sim/Não, tem data e tem R$.
+    """
     s = clean_spaces(line)
     toks = s.split(" ")
     if len(toks) < 6:
@@ -63,6 +68,12 @@ def looks_like_row(line: str) -> bool:
 
 
 def parse_row(line: str):
+    """
+    Parsing por tokens, aceitando variação com/sem unidade:
+    Nº Inciso Nome Quantidade [Unidade] R$... Data Sim/Não
+
+    Observação: a coluna Unidade não é exportada; ela só pode existir no texto.
+    """
     s = clean_spaces(line)
     toks = s.split(" ")
 
@@ -81,6 +92,7 @@ def parse_row(line: str):
 
     preco = toks[price_idx]
 
+    # Quantidade: antes do R$ (sem unidade) ou 2 antes (com unidade)
     if price_idx - 1 >= 0 and re.fullmatch(r"\d+(?:[.,]\d+)?", toks[price_idx - 1]):
         qtd = toks[price_idx - 1]
         name_end = price_idx - 1
@@ -102,33 +114,11 @@ def parse_row(line: str):
         "Compõe": compoe,
     }
 
-def humanize_vendor_name(name: str) -> str:
-    if not name:
-        return name
 
-    s = name.strip()
-
-    if "gov.br" in s.lower() or "compras.gov.br" in s.lower():
-        return s
-
-    s = re.sub(r"\s*-\s*", " - ", s)
-
-    for _ in range(2):
-        for c in CONNECTORS:
-            s = re.sub(
-                rf"(?i)([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])({c})([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])",
-                r"\1 \2 \3",
-                s,
-            )
-
-    for tok in sorted(CORP_TOKENS, key=len, reverse=True):
-        s = re.sub(
-            rf"(?i)([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])({re.escape(tok)})([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])",
-            r"\1 \2 \3",
-            s,
-        )
-
-    return clean_spaces(s)
+def normalize_price(p: str) -> str:
+    if not p:
+        return p
+    return "R$" + re.sub(r"^R\$\s*", "", p.strip())
 
 
 def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
@@ -148,6 +138,7 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                 if not line:
                     continue
 
+                # Item
                 m_item = RE_ITEM.match(line)
                 if m_item:
                     current_item = int(m_item.group(1))
@@ -155,18 +146,23 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                     last_company_line = None
                     continue
 
+                # CATMAT
                 m_cat = RE_CATMAT.search(line)
                 if m_cat:
                     current_catmat = m_cat.group(1)
 
+                # Ruído (mas não exclui "Fornecedor")
                 if is_noise_line(line) and line != "Fornecedor":
                     continue
 
+                # Possível linha de razão social antes (para casos em que quebra)
                 if (not looks_like_row(line)) and line != "Fornecedor":
+                    # evita capturar domínios/linhas de portal
                     if ("gov.br" not in line.lower()) and ("compras.gov.br" not in line.lower()):
-                        if 5 <= len(line) <= 140:
+                        if 5 <= len(line) <= 160:
                             last_company_line = line
 
+                # Registro de tabela
                 if looks_like_row(line):
                     parsed = parse_row(line)
                     if not parsed:
@@ -175,14 +171,14 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                     next_line = clean_spaces(lines[i + 1]) if i + 1 < len(lines) else ""
                     add_fornecedor = (next_line == "Fornecedor")
 
+                    # Nome final: mantém como o PDF “entrega”, só juntando a linha anterior se houver quebra
                     nome_final = parsed["Nome_parte"] or ""
                     if last_company_line:
                         nome_final = (last_company_line + " " + nome_final).strip()
-
                     if add_fornecedor:
                         nome_final = (nome_final + " - Fornecedor").strip()
 
-                    nome_final = humanize_vendor_name(nome_final)
+                    nome_final = clean_spaces(nome_final)
 
                     records.append({
                         "Item": f"Item {current_item}" if current_item is not None else None,
@@ -198,11 +194,13 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
     df = pd.DataFrame(records, columns=FINAL_COLUMNS)
 
+    # Mantém somente Compõe = Sim
     if "Compõe" in df.columns:
         df = df[df["Compõe"] == "Sim"].copy()
 
     df.reset_index(drop=True, inplace=True)
 
+    # Garante colunas e ordem final
     for col in FINAL_COLUMNS:
         if col not in df.columns:
             df[col] = None
