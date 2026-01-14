@@ -41,7 +41,7 @@ class handler(BaseHTTPRequestHandler):
             df = process_pdf_bytes(pdf_bytes)
 
             if df is None or df.empty:
-                self._send_text(200, "Nenhuma linha com 'Compõe = Sim' foi encontrada neste PDF.")
+                self._send_text(200, "O arquivo enviado não é um relatório de pesquisa de preços do ComprasGov.")
                 return
 
             out = io.BytesIO()
@@ -49,7 +49,7 @@ class handler(BaseHTTPRequestHandler):
             out.seek(0)
             xlsx_bytes = out.read()
 
-            filename = "saida_compoe_sim.xlsx"
+            filename = "relatorio_precos_compoe_comprasgov.xlsx"
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
