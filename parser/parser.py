@@ -6,7 +6,8 @@ import pandas as pd
 
 RE_ITEM = re.compile(r"^Item:\s*(\d+)\b")
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
-RE_DATE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+RE_DATE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
+RE_ROW_START = re.compile(r"^\s*(\d+)\s+([IVX]+)\s+", re.IGNORECASE)
 
 FINAL_COLUMNS = [
     "Item",
@@ -22,103 +23,145 @@ FINAL_COLUMNS = [
 
 
 def clean_spaces(s: str) -> str:
-    """Normaliza espaços para evitar quebra de layout."""
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
-def is_noise_line(line: str) -> bool:
-    s = clean_spaces(line)
+def is_header_line(s: str) -> bool:
+    s2 = clean_spaces(s).lower()
+    return s2.startswith("nº inciso nome quantidade") or s2.startswith("nº inciso nome")
+
+
+def normalize_line_for_join(s: str) -> str:
+    """
+    Normaliza padrões típicos do PDF antes de tokenizar:
+    - Junta "gov." + "br" => "gov.br"
+    - Cria espaço entre número e letra em "110Unidade" => "110 Unidade"
+    - Cria espaço entre "R$" e valor quando vierem separados
+    """
+    s = s.replace("\u00a0", " ")
+    s = clean_spaces(s)
+
+    # Junta gov. br -> gov.br (e também compras.gov. br)
+    s = re.sub(r"(gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
+
+    # Separa número + letra colados (110Unidade -> 110 Unidade)
+    s = re.sub(r"(\d)([A-Za-zÀ-ÿ])", r"\1 \2", s)
+
+    # Também separa letra + número colados (menos comum, mas ajuda)
+    s = re.sub(r"([A-Za-zÀ-ÿ])(\d)", r"\1 \2", s)
+
+    # Normaliza "R$ 150,4500" (deixa com espaço; combinaremos no parser)
+    s = re.sub(r"R\$\s+", "R$ ", s)
+
+    return s
+
+
+def record_is_complete(rec: str) -> bool:
+    """
+    Um registro completo normalmente:
+    - termina com Sim/Não
+    - tem uma data dd/mm/aaaa
+    - tem R$
+    """
+    s = clean_spaces(rec)
     if not s:
-        return True
-
-    if s.startswith(("Relatório", "Relatorio", "Informações", "Informacoes", "Totaldeitens", "Itens cotados")):
-        return True
-    if s.startswith(("NúmerodaPesquisa", "Número da Pesquisa", "Título:", "Observações:", "1de", "2de", "3de")):
-        return True
-    if s.startswith(("Legenda:", "Compraouitem", "Compra ou item")):
-        return True
-    if s.startswith(("Descriçãodoitem", "Descrição do item", "Descriçao do item")):
-        return True
-    if s.startswith("Nº") and "Inciso" in s:
-        return True
-
-    return False
-
-
-def looks_like_row(line: str) -> bool:
-    """
-    Detecta se uma linha parece registro da tabela:
-    começa com Nº e Inciso romano, termina com Sim/Não, tem data e tem R$.
-    """
-    s = clean_spaces(line)
-    toks = s.split(" ")
-    if len(toks) < 6:
         return False
-    if not toks[0].isdigit():
+    if not (s.endswith("Sim") or s.endswith("Não")):
         return False
-    if not re.fullmatch(r"[IVX]+", toks[1]):
+    if not RE_DATE.search(s):
         return False
-    if toks[-1] not in ("Sim", "Não"):
-        return False
-    if not RE_DATE.fullmatch(toks[-2]):
-        return False
-    if not any(t.startswith("R$") for t in toks):
+    if "R$" not in s:
         return False
     return True
 
 
-def parse_row(line: str):
+def parse_record(rec: str):
     """
-    Parsing por tokens, aceitando variação com/sem unidade:
-    Nº Inciso Nome Quantidade [Unidade] R$... Data Sim/Não
+    Parse de um registro lógico:
+    Nº Inciso Nome... Quantidade Unidade? R$ Valor Data Sim/Não
 
-    Observação: a coluna Unidade não é exportada; ela só pode existir no texto.
+    - Nome pode conter espaços e quebras já unidas
+    - Unidade pode existir ou não (não exportamos)
+    - Preço pode vir como "R$ 150,4500" (tokens separados)
     """
-    s = clean_spaces(line)
+    s = normalize_line_for_join(rec)
     toks = s.split(" ")
+
+    # Nº e Inciso
+    if len(toks) < 6:
+        return None
+    if not toks[0].isdigit():
+        return None
+    if not re.fullmatch(r"[IVX]+", toks[1], flags=re.IGNORECASE):
+        return None
 
     no = toks[0]
     inciso = toks[1]
+
+    # Compõe (último token)
     compoe = toks[-1]
+    if compoe not in ("Sim", "Não"):
+        return None
+
+    # Data (penúltimo token deve ser data)
     data = toks[-2]
+    if not re.fullmatch(r"\d{2}/\d{2}/\d{4}", data):
+        # às vezes a data pode não estar exatamente no penúltimo se houver ruído, então buscamos a última data
+        dates = [t for t in toks if re.fullmatch(r"\d{2}/\d{2}/\d{4}", t)]
+        if not dates:
+            return None
+        data = dates[-1]
 
-    price_idx = None
+    # Encontrar posição do "R$"
+    r_idx = None
     for i, t in enumerate(toks):
-        if t.startswith("R$"):
-            price_idx = i
+        if t == "R$" or t.startswith("R$"):
+            r_idx = i
             break
-    if price_idx is None:
+    if r_idx is None:
         return None
 
-    preco = toks[price_idx]
-
-    # Quantidade: antes do R$ (sem unidade) ou 2 antes (com unidade)
-    if price_idx - 1 >= 0 and re.fullmatch(r"\d+(?:[.,]\d+)?", toks[price_idx - 1]):
-        qtd = toks[price_idx - 1]
-        name_end = price_idx - 1
-    elif price_idx - 2 >= 0 and re.fullmatch(r"\d+(?:[.,]\d+)?", toks[price_idx - 2]):
-        qtd = toks[price_idx - 2]
-        name_end = price_idx - 2
+    # Preço: pode ser "R$" + "150,4500" ou "R$150,4500"
+    if toks[r_idx] == "R$":
+        if r_idx + 1 >= len(toks):
+            return None
+        preco_val = toks[r_idx + 1]
+        preco = f"R${preco_val}"
+        preco_end_idx = r_idx + 2
     else:
+        # já veio junto
+        preco = toks[r_idx]
+        preco_end_idx = r_idx + 1
+
+    # Quantidade: procurar o número imediatamente antes do "R$"
+    # (como já normalizamos 110Unidade -> 110 Unidade, isso fica bem confiável)
+    qtd_idx = None
+    for j in range(r_idx - 1, 1, -1):
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", toks[j]):
+            qtd_idx = j
+            break
+    if qtd_idx is None:
         return None
 
-    nome_parte = " ".join(toks[2:name_end]).strip()
+    quantidade = toks[qtd_idx]
+
+    # Nome: tokens entre Inciso (idx 1) e Quantidade (qtd_idx)
+    nome_tokens = toks[2:qtd_idx]
+    nome = " ".join(nome_tokens).strip()
+
+    # Remover "Unidade" do nome se ela tiver “escapado” (caso raro)
+    nome = re.sub(r"\bUnidade\b", "", nome, flags=re.IGNORECASE).strip()
+    nome = clean_spaces(nome)
 
     return {
         "Nº": no,
         "Inciso": inciso,
-        "Nome_parte": nome_parte,
-        "Quantidade": qtd,
+        "Nome": nome,
+        "Quantidade": quantidade,
         "Preço unitário": preco,
         "Data": data,
         "Compõe": compoe,
     }
-
-
-def normalize_price(p: str) -> str:
-    if not p:
-        return p
-    return "R$" + re.sub(r"^R\$\s*", "", p.strip())
 
 
 def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
@@ -126,81 +169,104 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
     current_item = None
     current_catmat = None
-    last_company_line = None
+
+    # Controle do parsing por tabela
+    in_table = False
+    buffer = ""  # buffer do registro lógico atual
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             page_text = page.extract_text(layout=True) or ""
             lines = page_text.splitlines()
 
-            for i in range(len(lines)):
-                line = clean_spaces(lines[i])
-                if not line:
+            for raw in lines:
+                line = raw.replace("\u00a0", " ")
+                line = line.rstrip("\n")
+                line_clean = clean_spaces(line)
+
+                if not line_clean:
                     continue
 
-                # Item
-                m_item = RE_ITEM.match(line)
+                # Detecta Item
+                m_item = RE_ITEM.match(line_clean)
                 if m_item:
+                    # Antes de trocar de item, tenta flush do buffer
+                    if buffer and record_is_complete(buffer):
+                        parsed = parse_record(buffer)
+                        if parsed:
+                            records.append({
+                                "Item": f"Item {current_item}" if current_item is not None else None,
+                                "CATMAT": current_catmat,
+                                **parsed
+                            })
+                    buffer = ""
+                    in_table = False
+
                     current_item = int(m_item.group(1))
                     current_catmat = None
-                    last_company_line = None
                     continue
 
                 # CATMAT
-                m_cat = RE_CATMAT.search(line)
+                m_cat = RE_CATMAT.search(line_clean)
                 if m_cat:
                     current_catmat = m_cat.group(1)
 
-                # Ruído (mas não exclui "Fornecedor")
-                if is_noise_line(line) and line != "Fornecedor":
+                # Header de tabela
+                if is_header_line(line_clean):
+                    in_table = True
+                    buffer = ""
                     continue
 
-                # Possível linha de razão social antes (para casos em que quebra)
-                if (not looks_like_row(line)) and line != "Fornecedor":
-                    # evita capturar domínios/linhas de portal
-                    if ("gov.br" not in line.lower()) and ("compras.gov.br" not in line.lower()):
-                        if 5 <= len(line) <= 160:
-                            last_company_line = line
+                if not in_table:
+                    continue
 
-                # Registro de tabela
-                if looks_like_row(line):
-                    parsed = parse_row(line)
-                    if not parsed:
+                # Normaliza linha para juntar quebras tipo "Compras.gov." + "br"
+                line_norm = normalize_line_for_join(line_clean)
+
+                # Começo de um registro novo?
+                if RE_ROW_START.match(line_norm):
+                    # flush do anterior
+                    if buffer:
+                        if record_is_complete(buffer):
+                            parsed = parse_record(buffer)
+                            if parsed:
+                                records.append({
+                                    "Item": f"Item {current_item}" if current_item is not None else None,
+                                    "CATMAT": current_catmat,
+                                    **parsed
+                                })
+                        buffer = ""
+
+                    buffer = line_norm
+                else:
+                    # Continuação (nome quebrado, gov.br quebrado etc.)
+                    if buffer:
+                        buffer = clean_spaces(buffer + " " + line_norm)
+                    else:
+                        # Linha perdida fora de registro — ignora
                         continue
 
-                    next_line = clean_spaces(lines[i + 1]) if i + 1 < len(lines) else ""
-                    add_fornecedor = (next_line == "Fornecedor")
+                # Se já ficou completo, parseia e zera buffer
+                if buffer and record_is_complete(buffer):
+                    parsed = parse_record(buffer)
+                    if parsed:
+                        records.append({
+                            "Item": f"Item {current_item}" if current_item is not None else None,
+                            "CATMAT": current_catmat,
+                            **parsed
+                        })
+                    buffer = ""
 
-                    # Nome final: mantém como o PDF “entrega”, só juntando a linha anterior se houver quebra
-                    nome_final = parsed["Nome_parte"] or ""
-                    if last_company_line:
-                        nome_final = (last_company_line + " " + nome_final).strip()
-                    if add_fornecedor:
-                        nome_final = (nome_final + " - Fornecedor").strip()
-
-                    nome_final = clean_spaces(nome_final)
-
-                    records.append({
-                        "Item": f"Item {current_item}" if current_item is not None else None,
-                        "CATMAT": current_catmat,
-                        "Nº": parsed["Nº"],
-                        "Inciso": parsed["Inciso"],
-                        "Nome": nome_final,
-                        "Quantidade": parsed["Quantidade"],
-                        "Preço unitário": normalize_price(parsed["Preço unitário"]),
-                        "Data": parsed["Data"],
-                        "Compõe": parsed["Compõe"],
-                    })
-
+    # Monta DataFrame
     df = pd.DataFrame(records, columns=FINAL_COLUMNS)
 
-    # Mantém somente Compõe = Sim
+    # Filtra apenas Compõe=Sim
     if "Compõe" in df.columns:
         df = df[df["Compõe"] == "Sim"].copy()
 
     df.reset_index(drop=True, inplace=True)
 
-    # Garante colunas e ordem final
+    # Garante colunas e ordem
     for col in FINAL_COLUMNS:
         if col not in df.columns:
             df[col] = None
