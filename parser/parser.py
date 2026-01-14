@@ -6,9 +6,16 @@ import pandas as pd
 
 RE_ITEM = re.compile(r"^Item:\s*(\d+)\b")
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
+
 RE_DATE_TOKEN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-RE_ROW_START = re.compile(r"^\s*(\d+)\s+([IVX]+)\s+", re.IGNORECASE)
 RE_PAGE_MARK = re.compile(r"^\s*\d+\s+de\s+\d+\s*$", re.IGNORECASE)
+
+# Início "ideal" do registro
+RE_ROW_START = re.compile(r"^\s*(\d+)\s+([IVX]+)\s+", re.IGNORECASE)
+# Linhas quebradas do começo do registro
+RE_ONLY_NO = re.compile(r"^\s*(\d+)\s*$")
+RE_ONLY_NO_INCISO = re.compile(r"^\s*(\d+)\s+([IVX]+)\s*$", re.IGNORECASE)
+RE_ONLY_INCISO_REST = re.compile(r"^\s*([IVX]+)\s+.+", re.IGNORECASE)
 
 FINAL_COLUMNS = [
     "Item",
@@ -27,11 +34,6 @@ def clean_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
-def is_header_line(s: str) -> bool:
-    s2 = clean_spaces(s).lower()
-    return s2.startswith("nº inciso nome quantidade") or s2.startswith("nº inciso nome")
-
-
 def normalize_text(s: str) -> str:
     """
     Normaliza padrões típicos do texto extraído:
@@ -42,17 +44,24 @@ def normalize_text(s: str) -> str:
     s = s.replace("\u00a0", " ")
     s = clean_spaces(s)
 
-    # gov. br -> gov.br (inclui compras.gov. br)
     s = re.sub(r"(gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
 
-    # separa número + letra colados: 110Unidade -> 110 Unidade
     s = re.sub(r"(\d)([A-Za-zÀ-ÿ])", r"\1 \2", s)
     s = re.sub(r"([A-Za-zÀ-ÿ])(\d)", r"\1 \2", s)
 
-    # normaliza R$ + espaços
     s = re.sub(r"R\$\s+", "R$ ", s)
 
     return s
+
+
+def is_header_line(line: str) -> bool:
+    """
+    Header de tabela no Compras.gov.br varia MUITO (espaços somem, quebra de linha etc.).
+    Então detectamos por “palavras-chave” ao invés de startswith.
+    """
+    s = normalize_text(line).lower()
+    # precisa ter “inciso” e “compõe” e algum indicativo de preço
+    return ("inciso" in s) and ("comp" in s) and ("pre" in s) and ("quant" in s)
 
 
 def parse_record(record: str):
@@ -80,7 +89,6 @@ def parse_record(record: str):
     # data: normalmente penúltimo token
     data = toks[-2]
     if not RE_DATE_TOKEN.fullmatch(data):
-        # fallback: última data encontrada
         dates = [t for t in toks if RE_DATE_TOKEN.fullmatch(t)]
         if not dates:
             return None
@@ -105,7 +113,7 @@ def parse_record(record: str):
     if not preco_raw:
         return None
 
-    # quantidade: preferir padrão "<num> Unidade"
+    # quantidade: preferir "<num> Unidade"
     qtd_idx = None
     for i in range(2, len(toks) - 1):
         if re.fullmatch(r"\d+(?:[.,]\d+)?", toks[i]) and toks[i + 1].lower().startswith("unidade"):
@@ -123,8 +131,6 @@ def parse_record(record: str):
         return None
 
     quantidade = toks[qtd_idx]
-
-    # nome: tudo entre inciso e quantidade
     nome = clean_spaces(" ".join(toks[2:qtd_idx]))
 
     return {
@@ -145,10 +151,13 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
     current_catmat = None
     in_table = False
 
-    # buffer do registro atual (um registro pode ocupar várias linhas)
-    current_row = None  # str
+    current_row = None
     current_row_item = None
     current_row_catmat = None
+
+    # Para reconstruir início quebrado
+    pending_no = None          # quando vier só "4"
+    pending_no_inciso = None   # quando vier só "4 I"
 
     def flush_current_row():
         nonlocal current_row, current_row_item, current_row_catmat
@@ -174,61 +183,103 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                 if not line:
                     continue
 
-                # ignora marca de página "2 de 74"
                 if RE_PAGE_MARK.fullmatch(line):
                     continue
 
-                # detecta início de item
+                # Item
                 m_item = RE_ITEM.match(line)
                 if m_item:
-                    # ao trocar de item, flush qualquer registro pendente
                     flush_current_row()
+                    pending_no = None
+                    pending_no_inciso = None
                     current_item = int(m_item.group(1))
                     current_catmat = None
                     in_table = False
                     continue
 
-                # detecta CATMAT
+                # CATMAT
                 m_cat = RE_CATMAT.search(line)
                 if m_cat:
                     current_catmat = m_cat.group(1)
 
-                # detecta header de tabela (início da tabela de preços)
+                # Header
                 if is_header_line(line):
                     flush_current_row()
+                    pending_no = None
+                    pending_no_inciso = None
                     in_table = True
                     continue
 
                 if not in_table:
                     continue
 
-                # se aparece novo registro (Nº Inciso ...)
-                if RE_ROW_START.match(line):
-                    # flush do anterior antes de iniciar outro
+                # Normaliza
+                line_norm = normalize_text(line)
+
+                # 1) Se a linha é só um número (Nº sozinho), guardamos
+                m_only_no = RE_ONLY_NO.match(line_norm)
+                if m_only_no:
+                    # Se já havia uma row em andamento, isso pode ser início do próximo registro
                     flush_current_row()
-                    current_row = line
+                    pending_no = m_only_no.group(1)
+                    pending_no_inciso = None
+                    continue
+
+                # 2) Se a linha é "Nº Inciso" sozinho, guardamos
+                m_only_no_inc = RE_ONLY_NO_INCISO.match(line_norm)
+                if m_only_no_inc:
+                    flush_current_row()
+                    pending_no = None
+                    pending_no_inciso = f"{m_only_no_inc.group(1)} {m_only_no_inc.group(2)}"
+                    continue
+
+                # 3) Início "ideal" do registro (Nº Inciso + resto)
+                if RE_ROW_START.match(line_norm):
+                    flush_current_row()
+                    current_row = line_norm
                     current_row_item = current_item
                     current_row_catmat = current_catmat
+                    pending_no = None
+                    pending_no_inciso = None
+                    continue
+
+                # 4) Se veio "I ..." e antes veio só "4" (Nº separado), juntamos
+                if pending_no and RE_ONLY_INCISO_REST.match(line_norm):
+                    flush_current_row()
+                    current_row = f"{pending_no} {line_norm}"
+                    current_row_item = current_item
+                    current_row_catmat = current_catmat
+                    pending_no = None
+                    pending_no_inciso = None
+                    continue
+
+                # 5) Se antes veio "4 I" e agora vem o resto, juntamos
+                if pending_no_inciso:
+                    flush_current_row()
+                    current_row = f"{pending_no_inciso} {line_norm}"
+                    current_row_item = current_item
+                    current_row_catmat = current_catmat
+                    pending_no = None
+                    pending_no_inciso = None
+                    continue
+
+                # 6) Continuação do registro atual
+                if current_row:
+                    current_row = clean_spaces(current_row + " " + line_norm)
                 else:
-                    # continuação do registro atual (nome quebrado, "gov.br" quebrado, etc.)
-                    if current_row:
-                        current_row = clean_spaces(current_row + " " + line)
-                    else:
-                        # linha solta dentro da tabela sem registro iniciado: ignora
-                        continue
+                    # linha “solta” dentro da tabela sem registro iniciado: ignora
+                    continue
 
     # flush final
     flush_current_row()
 
     df = pd.DataFrame(records, columns=FINAL_COLUMNS)
 
-    # somente Compõe = Sim
     if "Compõe" in df.columns:
         df = df[df["Compõe"] == "Sim"].copy()
 
     df.reset_index(drop=True, inplace=True)
 
-    # garante colunas e ordem
     for col in FINAL_COLUMNS:
         if col not in df.columns:
             df[col] = None
@@ -238,32 +289,20 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
 
 def validate_extraction(df: pd.DataFrame) -> dict:
-    """
-    Validação automática para detectar PDFs “fora do padrão”:
-    - % de Nome vazio
-    - % de Nome sem 'gov.br' (no Compras.gov.br quase sempre tem)
-    """
     total = int(len(df))
     if total == 0:
         return {
             "total_rows": 0,
             "rows_nome_vazio": 0,
             "pct_nome_vazio": 0.0,
-            "rows_nome_sem_govbr": 0,
-            "pct_nome_sem_govbr": 0.0,
         }
 
     nome_series = df["Nome"].fillna("").astype(str).str.strip()
     rows_nome_vazio = int((nome_series == "").sum())
     pct_nome_vazio = round((rows_nome_vazio / total) * 100, 2)
 
-    rows_nome_sem_govbr = int((~nome_series.str.lower().str.contains("gov.br")).sum())
-    pct_nome_sem_govbr = round((rows_nome_sem_govbr / total) * 100, 2)
-
     return {
         "total_rows": total,
         "rows_nome_vazio": rows_nome_vazio,
         "pct_nome_vazio": pct_nome_vazio,
-        "rows_nome_sem_govbr": rows_nome_sem_govbr,
-        "pct_nome_sem_govbr": pct_nome_sem_govbr,
     }
