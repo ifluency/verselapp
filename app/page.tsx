@@ -59,9 +59,9 @@ export default function Home() {
 
   return (
     <main style={{ maxWidth: 820, margin: "40px auto", padding: 16, fontFamily: "system-ui, Arial" }}>
-      <h1 style={{ marginBottom: 8 }}>Extrator de Cotação (PDF → Excel)</h1>
+      <h1 style={{ marginBottom: 8 }}>UPDE - Extrator de PDFs de Pesquisa de Preços - ComprasGov</h1>
       <p style={{ marginTop: 0, color: "#444" }}>
-        Envie o PDF e baixe o Excel somente com linhas onde <b>Compõe = Sim</b>.
+        Envie o PDF e baixe o Excel somente com os preços considerados na pesquisa de preços realizada no ComprasGov.
       </p>
 
       <form onSubmit={onSubmit} style={{ marginTop: 24, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
@@ -100,7 +100,7 @@ export default function Home() {
       </form>
 
       <p style={{ marginTop: 18, color: "#666", fontSize: 13 }}>
-        Uso interno. Dados públicos.
+        2025 - UPDE - HUSM - UFSM.
       </p>
     </main>
   );
