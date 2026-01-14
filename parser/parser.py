@@ -102,38 +102,6 @@ def parse_row(line: str):
         "Compõe": compoe,
     }
 
-
-def normalize_price(p: str) -> str:
-    if not p:
-        return p
-    return "R$" + re.sub(r"^R\$\s*", "", p.strip())
-
-
-CONNECTORS = ["E", "DE", "DO", "DA", "DAS", "DOS", "EM", "NA", "NO", "NAS", "NOS", "POR", "PARA"]
-CORP_TOKENS = [
-    "LTDA", "LTDA.", "LIMITADA",
-    "ME", "EPP", "EIRELI",
-    "S/A", "SA", "S.A", "S.A.",
-    "CIA", "CIA.", "COMPANHIA",
-    "INDUSTRIA", "INDÚSTRIA",
-    "COMERCIO", "COMÉRCIO",
-    "IMPORTACAO", "IMPORTAÇÃO",
-    "EXPORTACAO", "EXPORTAÇÃO",
-    "PRODUTOS", "PRODUTO",
-    "MEDICOS", "MÉDICOS", "MEDICO", "MÉDICO",
-    "HOSPITALARES", "HOSPITALAR",
-    "DISTRIBUIDORA", "DISTRIBUICAO", "DISTRIBUIÇÃO",
-    "SERVICOS", "SERVIÇOS",
-    "MATERIAIS", "MATERIAL",
-    "EQUIPAMENTOS", "EQUIPAMENTO",
-    "SUPRIMENTOS",
-    "LOGISTICA", "LOGÍSTICA",
-    "FARMACEUTICA", "FARMACÊUTICA",
-    "ODONTOLOGICA", "ODONTOLÓGICA",
-    "CLINICA", "CLÍNICA",
-]
-
-
 def humanize_vendor_name(name: str) -> str:
     if not name:
         return name
