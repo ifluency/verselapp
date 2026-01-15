@@ -7,7 +7,7 @@ import pdfplumber
 from parser import process_pdf_bytes_debug, debug_dump, validate_extraction
 
 
-def dump_first_pages(pdf_bytes: bytes, pages=3, max_lines=260) -> str:
+def dump_first_pages(pdf_bytes: bytes, pages=10, max_lines=2500) -> str:
     """
     Seu dump original (mantido). Ajuda a enxergar como o pdfplumber
     está quebrando as linhas.
