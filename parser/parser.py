@@ -60,33 +60,44 @@ def is_header(line: str) -> bool:
     return s.startswith("nº inciso nome quantidade")
 
 
-def contains_gov(line: str) -> bool:
-    s = normalize_text(line).lower()
-    return ("compras.gov" in s) or ("gov.br" in s)
+def is_row_line(line: str) -> bool:
+    return RE_ROW_START.match(normalize_text(line)) is not None
 
 
 def looks_like_name_fragment(line: str) -> bool:
     s = normalize_text(line)
-    if not s:
-        return False
-    if RE_ROW_START.match(s):
+    if not s or is_row_line(s) or is_header(s):
         return False
 
     low = s.lower()
 
-    # linhas clássicas do dump
+    # tokens comuns no dump
     if low in ("br", "gov.br"):
         return True
+
+    # linhas com gov / compras
     if "compras.gov" in low or "gov.br" in low:
         return True
 
-    # normalmente são linhas textuais (quase sem números)
+    # linha majoritariamente textual (pouco número)
     letters = sum(ch.isalpha() for ch in s)
     digits = sum(ch.isdigit() for ch in s)
     if letters >= 6 and digits <= 1:
         return True
 
     return False
+
+
+def next_nonempty(lines, start_idx):
+    """Retorna (idx, line) do próximo não-vazio a partir de start_idx; senão (None, None)."""
+    n = len(lines)
+    i = start_idx
+    while i < n:
+        s = normalize_text(lines[i])
+        if s:
+            return i, s
+        i += 1
+    return None, None
 
 
 def parse_row_fields(row_line: str):
@@ -153,8 +164,6 @@ def parse_row_fields(row_line: str):
         return None
 
     quantidade = toks[qtd_idx]
-
-    # parte do nome que pode aparecer dentro da própria linha
     inline_name = clean_spaces(" ".join(toks[2:qtd_idx]))
 
     return {
@@ -175,60 +184,32 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
     current_catmat = None
     capture = False
 
-    pending_name = ""     # nome antes do próximo registro
-    current_fields = None
-    current_name = ""     # nome do registro atual
-
-    def finalize_current():
-        nonlocal current_fields, current_name
-        if not current_fields:
-            return
-
-        nome_final = normalize_text(clean_spaces(current_name))
-
-        records.append({
-            "Item": f"Item {current_item}" if current_item is not None else None,
-            "CATMAT": current_catmat,
-            "Nº": current_fields["Nº"],
-            "Inciso": current_fields["Inciso"],
-            "Nome": nome_final,
-            "Quantidade": current_fields["Quantidade"],
-            "Preço unitário": current_fields["Preço unitário"],
-            "Data": current_fields["Data"],
-            "Compõe": current_fields["Compõe"],
-        })
-
-        current_fields = None
-        current_name = ""
-
-    def add_to_pending(fragment: str):
-        nonlocal pending_name
-        pending_name = clean_spaces((pending_name + " " + fragment).strip())
-
-    def add_to_current(fragment: str):
-        nonlocal current_name
-        current_name = clean_spaces((current_name + " " + fragment).strip())
-
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             text = page.extract_text(layout=True) or ""
-            lines = text.splitlines()
+            raw_lines = text.splitlines()
 
-            for raw in lines:
-                line = clean_spaces(raw.replace("\u00a0", " "))
-                if not line:
+            # limpa ruído (ex: "1 de 74")
+            lines = []
+            for ln in raw_lines:
+                ln2 = clean_spaces(ln.replace("\u00a0", " "))
+                if not ln2:
                     continue
-                if RE_PAGE_MARK.fullmatch(line):
+                if RE_PAGE_MARK.fullmatch(ln2):
                     continue
+                lines.append(ln2)
+
+            i = 0
+            while i < len(lines):
+                line = lines[i]
 
                 # novo item
                 m_item = RE_ITEM.match(line)
                 if m_item:
-                    finalize_current()
-                    pending_name = ""
-                    capture = False
                     current_item = int(m_item.group(1))
                     current_catmat = None
+                    capture = False
+                    i += 1
                     continue
 
                 # CATMAT
@@ -238,80 +219,110 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
                 # liga/desliga tabela
                 if is_table_on(line):
-                    finalize_current()
-                    pending_name = ""
                     capture = True
+                    i += 1
                     continue
                 if is_table_off(line):
-                    finalize_current()
-                    pending_name = ""
                     capture = False
+                    i += 1
                     continue
 
                 if not capture:
+                    i += 1
                     continue
 
-                s = normalize_text(line)
-
-                if is_header(s):
+                # ignora header
+                if is_header(line):
+                    i += 1
                     continue
 
-                # linha principal do registro
-                if RE_ROW_START.match(s):
-                    finalize_current()
-
-                    fields = parse_row_fields(s)
+                # se achou linha de registro
+                if is_row_line(line):
+                    fields = parse_row_fields(line)
                     if not fields:
-                        # se não parsear, mas parecer nome, guarda como pending
-                        if looks_like_name_fragment(s):
-                            add_to_pending(s)
+                        i += 1
                         continue
 
-                    current_fields = fields
+                    # ====== monta NOME com janela antes/depois + lookahead ======
 
-                    # Nome inicial = pending + inline (se houver)
-                    parts = []
-                    if pending_name:
-                        parts.append(pending_name)
-                    if fields.get("InlineNome"):
-                        parts.append(fields["InlineNome"])
-                    current_name = clean_spaces(" ".join(parts))
+                    # 1) prefixo: pega 1-3 linhas anteriores (somente se forem fragmentos de nome)
+                    prefix_parts = []
+                    back = i - 1
+                    # no dump, geralmente é 1 linha anterior, às vezes 2 ("MMS-FUNDAÇÃO..." + inline)
+                    while back >= 0 and len(prefix_parts) < 3:
+                        prev = lines[back]
+                        if is_row_line(prev) or is_header(prev) or is_table_on(prev) or is_table_off(prev) or RE_ITEM.match(prev):
+                            break
+                        if looks_like_name_fragment(prev):
+                            # insere no início (ordem correta)
+                            prefix_parts.insert(0, normalize_text(prev))
+                            back -= 1
+                            continue
+                        break
 
-                    pending_name = ""
+                    # 2) inline nome (quando aparece dentro da linha do registro, ex item 26)
+                    inline_part = fields.get("InlineNome") or ""
+                    inline_part = normalize_text(inline_part)
+
+                    # 3) sufixo: pega linhas seguintes SOMENTE se não forem prefixo do próximo registro
+                    suffix_parts = []
+                    fwd = i + 1
+                    while fwd < len(lines) and len(suffix_parts) < 3:
+                        nxt = lines[fwd]
+
+                        # para se começar outro registro / header / item / período / legenda
+                        if is_row_line(nxt) or is_header(nxt) or is_table_on(nxt) or is_table_off(nxt) or RE_ITEM.match(nxt):
+                            break
+
+                        if not looks_like_name_fragment(nxt):
+                            break
+
+                        nxt_norm = normalize_text(nxt).strip().lower()
+
+                        # "br" e "gov.br" sempre pertencem ao registro atual (sufixo clássico)
+                        if nxt_norm in ("br", "gov.br"):
+                            suffix_parts.append(normalize_text(nxt))
+                            fwd += 1
+                            continue
+
+                        # lookahead: se a PRÓXIMA linha não vazia após esse fragmento é uma row_line,
+                        # então ESSE fragmento é prefixo do próximo registro -> NÃO anexa, e para.
+                        j, look = next_nonempty(lines, fwd + 1)
+                        if look is not None and is_row_line(look):
+                            break
+
+                        # caso contrário, é continuação do nome atual
+                        suffix_parts.append(normalize_text(nxt))
+                        fwd += 1
+
+                    # monta nome final
+                    nome_parts = []
+                    nome_parts.extend(prefix_parts)
+
+                    # Só inclui inline se tiver texto real
+                    if inline_part:
+                        nome_parts.append(inline_part)
+
+                    nome_parts.extend(suffix_parts)
+
+                    nome = normalize_text(clean_spaces(" ".join(nome_parts)))
+
+                    records.append({
+                        "Item": f"Item {current_item}" if current_item is not None else None,
+                        "CATMAT": current_catmat,
+                        "Nº": fields["Nº"],
+                        "Inciso": fields["Inciso"],
+                        "Nome": nome,
+                        "Quantidade": fields["Quantidade"],
+                        "Preço unitário": fields["Preço unitário"],
+                        "Data": fields["Data"],
+                        "Compõe": fields["Compõe"],
+                    })
+
+                    i += 1
                     continue
 
-                # fragmento de nome
-                if looks_like_name_fragment(s):
-                    if not current_fields:
-                        # ainda não começou registro -> prefixo do próximo
-                        add_to_pending(s)
-                        continue
-
-                    # Já estamos dentro de um registro: decidir se anexa ou se é do próximo
-                    low = s.lower()
-                    name_has_gov = contains_gov(current_name)
-
-                    # Regras de anexo (baseadas no dump):
-                    # 1) "br" / "gov.br" sempre anexa (sufixo)
-                    if low in ("br", "gov.br"):
-                        add_to_current(s)
-                        continue
-
-                    # 2) Se o nome atual ainda NÃO tem gov e o fragmento contém gov/Compras, anexa
-                    if (not name_has_gov) and contains_gov(s):
-                        add_to_current(s)
-                        continue
-
-                    # 3) Caso contrário: isso é nome do PRÓXIMO registro.
-                    # Finaliza o atual e joga esse fragmento para pending.
-                    finalize_current()
-                    add_to_pending(s)
-                    continue
-
-                # qualquer outra linha dentro da tabela é ruído
-                continue
-
-    finalize_current()
+                i += 1
 
     df = pd.DataFrame(records, columns=FINAL_COLUMNS)
 
