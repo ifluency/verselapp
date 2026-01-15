@@ -3,7 +3,6 @@ import io
 import pdfplumber
 import pandas as pd
 
-
 RE_ITEM = re.compile(r"^Item:\s*(\d+)\b", re.IGNORECASE)
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
 
@@ -23,6 +22,14 @@ FINAL_COLUMNS = [
     "Compõe",
 ]
 
+# Regras fixas que você passou:
+INCISO_TERMINATORS = {
+    "I": "Compras.gov.br",
+    "III": "Mídias Especializadas",
+    "IV": "Fornecedor",
+    # II e V: sem terminador fixo por enquanto (podemos adicionar depois)
+}
+
 
 def clean_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
@@ -35,6 +42,9 @@ def normalize_text(s: str) -> str:
     # gov. br -> gov.br
     s = re.sub(r"(gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
 
+    # Compras.gov. br -> Compras.gov.br
+    s = re.sub(r"(Compras\.gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
+
     # 110Unidade -> 110 Unidade
     s = re.sub(r"(\d)([A-Za-zÀ-ÿ])", r"\1 \2", s)
     s = re.sub(r"([A-Za-zÀ-ÿ])(\d)", r"\1 \2", s)
@@ -43,11 +53,6 @@ def normalize_text(s: str) -> str:
     s = re.sub(r"R\$\s+", "R$ ", s)
 
     return s
-
-
-def fold(s: str) -> str:
-    """lower + normalize spaces to compare markers reliably"""
-    return normalize_text(s).lower()
 
 
 def is_table_on(line: str) -> bool:
@@ -65,28 +70,28 @@ def is_header(line: str) -> bool:
     return s.startswith("nº inciso nome quantidade")
 
 
+def contains_gov(line: str) -> bool:
+    s = normalize_text(line).lower()
+    return ("compras.gov" in s) or ("gov.br" in s)
+
+
 def looks_like_name_fragment(line: str) -> bool:
     s = normalize_text(line)
     if not s:
         return False
-    # linha de registro não é fragmento
     if RE_ROW_START.match(s):
         return False
 
-    low = fold(s)
+    low = s.lower()
 
-    # linhas clássicas do dump
     if low in ("br", "gov.br"):
         return True
+    if "compras.gov" in low or "gov.br" in low:
+        return True
 
-    # texto majoritariamente (poucos números)
     letters = sum(ch.isalpha() for ch in s)
     digits = sum(ch.isdigit() for ch in s)
     if letters >= 6 and digits <= 1:
-        return True
-
-    # contém compras/gov
-    if "compras.gov" in low or "gov.br" in low:
         return True
 
     return False
@@ -95,7 +100,7 @@ def looks_like_name_fragment(line: str) -> bool:
 def parse_row_fields(row_line: str):
     """
     Parseia a linha principal do registro:
-    Ex.: '4 I 110 Unidade R$ 150,4500 05/12/2025 Sim'
+      '4 I 110 Unidade R$ 150,4500 05/12/2025 Sim'
     """
     s = normalize_text(row_line)
     toks = s.split(" ")
@@ -156,7 +161,7 @@ def parse_row_fields(row_line: str):
 
     quantidade = toks[qtd_idx]
 
-    # Nome inline (quase sempre vazio no seu PDF, mas mantemos)
+    # parte do nome dentro da própria linha (normalmente vazio no seu dump, mas mantém)
     inline_name = clean_spaces(" ".join(toks[2:qtd_idx]))
 
     return {
@@ -170,109 +175,89 @@ def parse_row_fields(row_line: str):
     }
 
 
-# Terminadores por inciso (regras que você passou)
-INCISO_END_MARKERS = {
-    "I": ["compras.gov.br"],                # pode vir quebrado (Compras.gov. + br / gov.br)
-    "III": ["mídias especializadas", "midias especializadas"],
-    "IV": ["fornecedor"],
-}
-
-
-def name_has_terminator(inciso: str, name: str) -> bool:
-    inc = (inciso or "").upper()
-    low = fold(name)
-    for m in INCISO_END_MARKERS.get(inc, []):
-        if fold(m) in low:
-            return True
-    return False
-
-
-def cut_name_at_terminator(inciso: str, name: str) -> str:
-    """Corta tudo depois do terminador do inciso (inclusive contaminações)."""
-    inc = (inciso or "").upper()
-    original = normalize_text(name)
-    low = fold(original)
-
-    # pega o primeiro marcador que aparecer e corta no fim dele
-    best_idx = None
-    best_len = None
-    for m in INCISO_END_MARKERS.get(inc, []):
-        mm = fold(m)
-        idx = low.find(mm)
-        if idx != -1:
-            if best_idx is None or idx < best_idx:
-                best_idx = idx
-                best_len = len(m)
-
-    if best_idx is None:
-        return original.strip()
-
-    # corta no "fim" do marcador encontrado dentro do texto original
-    return original[: best_idx + best_len].strip()
-
-
-def stitch_compras_gov_variants(text: str) -> str:
+def cut_name_by_inciso(nome_raw: str, inciso: str) -> str:
     """
-    Normaliza variações que aparecem quebradas:
-    - 'Compras.gov.' + 'br' (linha separada)
-    - 'Compras.gov. br' -> 'Compras.gov.br'
-    - 'gov.br' perdido -> se já existe 'Compras.gov.' antes
+    Corta o nome exatamente no terminador do inciso quando existir.
+    Isso evita 'vazamento' do nome do próximo registro.
     """
-    s = normalize_text(text)
+    nome_raw = normalize_text(nome_raw)
+    inciso = (inciso or "").upper()
 
-    # compras.gov. br -> compras.gov.br
-    s = re.sub(r"(Compras\.gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
+    term = INCISO_TERMINATORS.get(inciso)
+    if not term:
+        return nome_raw.strip()
 
-    # casos estranhos: "Compras.gov." sem br depois (mantém)
-    return s
+    m = re.search(re.escape(term), nome_raw, flags=re.IGNORECASE)
+    if not m:
+        return nome_raw.strip()
+
+    return nome_raw[: m.end()].strip()
 
 
-def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
+def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
+    """
+    Retorna:
+      df_final (FINAL_COLUMNS)
+      debug_records (lista com fragmentos, raw, final)
+    """
     records = []
+    debug_records = []
 
     current_item = None
     current_catmat = None
     capture = False
 
-    pending_prefix = ""     # prefixo antes do próximo registro (linhas soltas)
+    pending_name = ""      # prefixo do próximo
     current_fields = None
-    current_name = ""       # nome do registro atual
+    current_name = ""      # nome em construção do registro atual
+    nome_fragments = []    # fragmentos do nome (para debug)
 
     def finalize_current():
-        nonlocal current_fields, current_name, pending_prefix
+        nonlocal current_fields, current_name, pending_name, nome_fragments
+
         if not current_fields:
             return
 
-        name = stitch_compras_gov_variants(current_name)
+        inciso = current_fields["Inciso"]
+        nome_raw = normalize_text(clean_spaces(current_name))
+        nome_final = cut_name_by_inciso(nome_raw, inciso)
 
-        # corte duro pelo terminador do inciso (remove contaminação)
-        name = cut_name_at_terminator(current_fields["Inciso"], name)
-
-        name = normalize_text(name)
-
-        records.append({
+        row = {
             "Item": f"Item {current_item}" if current_item is not None else None,
             "CATMAT": current_catmat,
             "Nº": current_fields["Nº"],
-            "Inciso": current_fields["Inciso"],
-            "Nome": name,
+            "Inciso": inciso,
+            "Nome": nome_final,
             "Quantidade": current_fields["Quantidade"],
             "Preço unitário": current_fields["Preço unitário"],
             "Data": current_fields["Data"],
             "Compõe": current_fields["Compõe"],
+        }
+        records.append(row)
+
+        debug_records.append({
+            "Item": row["Item"],
+            "CATMAT": row["CATMAT"],
+            "Nº": row["Nº"],
+            "Inciso": row["Inciso"],
+            "Nome_fragments": nome_fragments.copy(),
+            "Nome_raw": nome_raw,
+            "Nome_final": nome_final,
         })
 
         current_fields = None
         current_name = ""
-        pending_prefix = ""
+        nome_fragments = []
 
     def add_to_pending(fragment: str):
-        nonlocal pending_prefix
-        pending_prefix = clean_spaces((pending_prefix + " " + fragment).strip())
+        nonlocal pending_name
+        pending_name = clean_spaces((pending_name + " " + fragment).strip())
 
     def add_to_current(fragment: str):
-        nonlocal current_name
+        nonlocal current_name, nome_fragments
+        fragment = normalize_text(fragment)
         current_name = clean_spaces((current_name + " " + fragment).strip())
+        nome_fragments.append(fragment)
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
@@ -290,10 +275,10 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                 m_item = RE_ITEM.match(line)
                 if m_item:
                     finalize_current()
+                    pending_name = ""
                     capture = False
                     current_item = int(m_item.group(1))
                     current_catmat = None
-                    pending_prefix = ""
                     continue
 
                 # CATMAT
@@ -304,12 +289,12 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                 # liga/desliga tabela
                 if is_table_on(line):
                     finalize_current()
-                    pending_prefix = ""
+                    pending_name = ""
                     capture = True
                     continue
                 if is_table_off(line):
                     finalize_current()
-                    pending_prefix = ""
+                    pending_name = ""
                     capture = False
                     continue
 
@@ -322,17 +307,6 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
                 # linha principal do registro
                 if RE_ROW_START.match(s):
-                    # Se já existe um registro em aberto:
-                    # - se ele AINDA não atingiu o terminador do inciso,
-                    #   então essa "nova linha de registro" na verdade é ruído de linearização:
-                    #   Finaliza? NÃO. Trata a linha como fragmento (pending) do que está vindo.
-                    if current_fields and not name_has_terminator(current_fields["Inciso"], current_name):
-                        # não começamos novo registro antes de fechar o nome do atual
-                        # essa linha costuma ser parte do layout; guarda como pending
-                        add_to_current(s)  # anexa (vai ser cortado pelo terminador depois)
-                        continue
-
-                    # caso normal: fecha anterior e inicia novo
                     finalize_current()
 
                     fields = parse_row_fields(s)
@@ -343,34 +317,46 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
                     current_fields = fields
 
+                    # Nome inicial = pending + inline (se existir)
                     parts = []
-                    if pending_prefix:
-                        parts.append(pending_prefix)
+                    nome_fragments = []
+
+                    if pending_name:
+                        parts.append(pending_name)
+                        nome_fragments.append(normalize_text(pending_name))
+
                     if fields.get("InlineNome"):
                         parts.append(fields["InlineNome"])
+                        nome_fragments.append(normalize_text(fields["InlineNome"]))
+
                     current_name = clean_spaces(" ".join(parts))
-                    pending_prefix = ""
+                    pending_name = ""
                     continue
 
                 # fragmento de nome
                 if looks_like_name_fragment(s):
                     if not current_fields:
-                        # ainda não começou registro -> prefixo do próximo
                         add_to_pending(s)
                         continue
 
-                    # estamos dentro de um registro: regra principal
-                    # Se o registro ainda não atingiu o terminador do inciso, anexa SEM PENSAR
-                    if not name_has_terminator(current_fields["Inciso"], current_name):
+                    low = s.lower()
+                    name_has_gov = contains_gov(current_name)
+
+                    # 1) "br" / "gov.br" sempre anexa
+                    if low in ("br", "gov.br"):
                         add_to_current(s)
                         continue
 
-                    # Se já atingiu o terminador, isso pertence ao próximo registro -> vira pending
-                    # (ex.: "EMPRESA BRASILEIRA..." depois do Compras.gov.br)
+                    # 2) se nome atual ainda não tem gov e fragmento tem gov, anexa
+                    if (not name_has_gov) and contains_gov(s):
+                        add_to_current(s)
+                        continue
+
+                    # 3) caso contrário é do próximo -> finaliza e joga pra pending
+                    finalize_current()
                     add_to_pending(s)
                     continue
 
-                # ruído
                 continue
 
     finalize_current()
@@ -382,12 +368,16 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
         df = df[df["Compõe"] == "Sim"].copy()
 
     df.reset_index(drop=True, inplace=True)
-
     for col in FINAL_COLUMNS:
         if col not in df.columns:
             df[col] = None
     df = df[FINAL_COLUMNS]
 
+    return df, debug_records
+
+
+def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
+    df, _ = process_pdf_bytes_debug(pdf_bytes)
     return df
 
 
@@ -400,3 +390,39 @@ def validate_extraction(df: pd.DataFrame) -> dict:
     rows_nome_vazio = int((nome_series == "").sum())
     pct_nome_vazio = round((rows_nome_vazio / total) * 100, 2)
     return {"total_rows": total, "rows_nome_vazio": rows_nome_vazio, "pct_nome_vazio": pct_nome_vazio}
+
+
+def debug_dump(df: pd.DataFrame, debug_records: list, max_rows: int = 50) -> str:
+    """
+    Retorna uma STRING (bom pra endpoint /api/debug),
+    mostrando fragmentos -> raw -> final.
+    """
+    out = []
+    out.append("=" * 120)
+    out.append("DEBUG DUMP — CONSTRUÇÃO DOS NOMES")
+    out.append("=" * 120)
+
+    for i, r in enumerate(debug_records[:max_rows], start=1):
+        out.append(f"\n[{i}] {r['Item']} | Nº {r['Nº']} | Inciso {r['Inciso']}")
+        out.append("-" * 100)
+
+        out.append("Fragmentos coletados:")
+        if r["Nome_fragments"]:
+            for j, frag in enumerate(r["Nome_fragments"], start=1):
+                out.append(f"  {j:02d}. {frag}")
+        else:
+            out.append("  (nenhum fragmento)")
+
+        out.append("\nNome antes do corte:")
+        out.append(f"  {r['Nome_raw']}")
+
+        out.append("\nNome FINAL:")
+        out.append(f"  {r['Nome_final']}")
+        out.append("-" * 100)
+
+    out.append("\nResumo:")
+    out.append(f"  Total de registros analisados: {len(debug_records)}")
+    out.append(f"  Linhas no DataFrame final:     {len(df)}")
+    out.append("=" * 120)
+
+    return "\n".join(out)
