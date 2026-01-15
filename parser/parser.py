@@ -29,12 +29,6 @@ def clean_spaces(s: str) -> str:
 
 
 def normalize_text(s: str) -> str:
-    """
-    Normaliza padrões típicos do texto extraído:
-    - Junta "gov." + "br" => "gov.br"
-    - Separa "110Unidade" => "110 Unidade"
-    - Normaliza "R$   150,4500" => "R$ 150,4500"
-    """
     s = s.replace("\u00a0", " ")
     s = clean_spaces(s)
 
@@ -61,11 +55,17 @@ def is_table_off(line: str) -> bool:
     return s.startswith("legenda")
 
 
+def is_header(line: str) -> bool:
+    s = normalize_text(line).lower()
+    return s.startswith("nº inciso nome quantidade")
+
+
+def contains_gov(line: str) -> bool:
+    s = normalize_text(line).lower()
+    return ("compras.gov" in s) or ("gov.br" in s)
+
+
 def looks_like_name_fragment(line: str) -> bool:
-    """
-    Fragmentos de nome aparecem sozinhos no dump (antes/depois do registro),
-    ex: 'MINISTERIO ... - Compras.gov.' ou 'br' ou 'gov.br' ou 'HOSPITALARES - Compras.gov.br'
-    """
     s = normalize_text(line)
     if not s:
         return False
@@ -74,15 +74,13 @@ def looks_like_name_fragment(line: str) -> bool:
 
     low = s.lower()
 
-    # casos óbvios do dump
+    # linhas clássicas do dump
     if low in ("br", "gov.br"):
         return True
     if "compras.gov" in low or "gov.br" in low:
         return True
-    if s.endswith("-"):
-        return True
 
-    # linha predominantemente textual
+    # normalmente são linhas textuais (quase sem números)
     letters = sum(ch.isalpha() for ch in s)
     digits = sum(ch.isdigit() for ch in s)
     if letters >= 6 and digits <= 1:
@@ -94,14 +92,12 @@ def looks_like_name_fragment(line: str) -> bool:
 def parse_row_fields(row_line: str):
     """
     Parseia a linha principal do registro:
-    Ex (dump): '4 I 110 Unidade R$ 150,4500 05/12/2025 Sim'
-    Ex (dump item 26): '26 I SAÚDE DE DOURADOS - Compras.gov. 250 Unidade R$ 112,7000 17/09/2025 Não'
-
-    Retorna:
-      no, inciso, inline_name_part, quantidade, preco_raw, data, compoe
+    Ex.: '4 I 110 Unidade R$ 150,4500 05/12/2025 Sim'
+    Ex.: '26 I SAÚDE DE DOURADOS - Compras.gov. 250 Unidade R$ ... Não'
     """
     s = normalize_text(row_line)
     toks = s.split(" ")
+
     if len(toks) < 6:
         return None
     if not toks[0].isdigit():
@@ -116,7 +112,6 @@ def parse_row_fields(row_line: str):
     if compoe not in ("Sim", "Não"):
         return None
 
-    # data (última data)
     dates = [t for t in toks if RE_DATE_TOKEN.fullmatch(t)]
     if not dates:
         return None
@@ -159,13 +154,13 @@ def parse_row_fields(row_line: str):
 
     quantidade = toks[qtd_idx]
 
-    # trecho do nome que às vezes aparece dentro da própria linha (ex item 26)
-    inline_name_part = clean_spaces(" ".join(toks[2:qtd_idx]))
+    # parte do nome que pode aparecer dentro da própria linha
+    inline_name = clean_spaces(" ".join(toks[2:qtd_idx]))
 
     return {
         "Nº": no,
         "Inciso": inciso,
-        "InlineNome": inline_name_part,
+        "InlineNome": inline_name,
         "Quantidade": quantidade,
         "Preço unitário": preco_raw,
         "Data": data,
@@ -178,15 +173,11 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
     current_item = None
     current_catmat = None
-
     capture = False
 
-    # nome “pendente” acumulado até aparecer a próxima linha de registro
-    pending_name = ""
-
-    # registro atual (linha de Nº Inciso...)
+    pending_name = ""     # nome antes do próximo registro
     current_fields = None
-    current_name = ""
+    current_name = ""     # nome do registro atual
 
     def finalize_current():
         nonlocal current_fields, current_name
@@ -195,7 +186,6 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
         nome_final = normalize_text(clean_spaces(current_name))
 
-        # grava
         records.append({
             "Item": f"Item {current_item}" if current_item is not None else None,
             "CATMAT": current_catmat,
@@ -210,6 +200,14 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
         current_fields = None
         current_name = ""
+
+    def add_to_pending(fragment: str):
+        nonlocal pending_name
+        pending_name = clean_spaces((pending_name + " " + fragment).strip())
+
+    def add_to_current(fragment: str):
+        nonlocal current_name
+        current_name = clean_spaces((current_name + " " + fragment).strip())
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
@@ -226,11 +224,9 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                 # novo item
                 m_item = RE_ITEM.match(line)
                 if m_item:
-                    # fecha qualquer registro pendente do item anterior
                     finalize_current()
                     pending_name = ""
                     capture = False
-
                     current_item = int(m_item.group(1))
                     current_catmat = None
                     continue
@@ -240,7 +236,7 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                 if m_cat:
                     current_catmat = m_cat.group(1)
 
-                # liga/desliga captura por período/legenda
+                # liga/desliga tabela
                 if is_table_on(line):
                     finalize_current()
                     pending_name = ""
@@ -257,25 +253,23 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
 
                 s = normalize_text(line)
 
-                # ignora o header textual da tabela
-                if s.lower().startswith("nº inciso nome quantidade"):
+                if is_header(s):
                     continue
 
-                # É uma linha de registro (Nº Inciso ...)
+                # linha principal do registro
                 if RE_ROW_START.match(s):
-                    # ao iniciar um novo registro, finalize o anterior
                     finalize_current()
 
                     fields = parse_row_fields(s)
                     if not fields:
-                        # se não parseou, trata como texto solto
+                        # se não parsear, mas parecer nome, guarda como pending
                         if looks_like_name_fragment(s):
-                            pending_name = clean_spaces((pending_name + " " + s).strip())
+                            add_to_pending(s)
                         continue
 
                     current_fields = fields
 
-                    # nome = pending_name (antes) + inline_name_part (se existir)
+                    # Nome inicial = pending + inline (se houver)
                     parts = []
                     if pending_name:
                         parts.append(pending_name)
@@ -286,21 +280,37 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
                     pending_name = ""
                     continue
 
-                # Não é linha de registro:
-                # - se parece fragmento de nome e NÃO temos registro atual -> acumula no pending_name (vai para o PRÓXIMO registro)
-                # - se temos registro atual -> é continuação do nome do registro atual
+                # fragmento de nome
                 if looks_like_name_fragment(s):
-                    if current_fields:
-                        # continuação do nome do registro atual (ex: 'br', 'gov.br', 'HOSPITALARES - ...')
-                        current_name = clean_spaces((current_name + " " + s).strip())
-                    else:
-                        pending_name = clean_spaces((pending_name + " " + s).strip())
+                    if not current_fields:
+                        # ainda não começou registro -> prefixo do próximo
+                        add_to_pending(s)
+                        continue
+
+                    # Já estamos dentro de um registro: decidir se anexa ou se é do próximo
+                    low = s.lower()
+                    name_has_gov = contains_gov(current_name)
+
+                    # Regras de anexo (baseadas no dump):
+                    # 1) "br" / "gov.br" sempre anexa (sufixo)
+                    if low in ("br", "gov.br"):
+                        add_to_current(s)
+                        continue
+
+                    # 2) Se o nome atual ainda NÃO tem gov e o fragmento contém gov/Compras, anexa
+                    if (not name_has_gov) and contains_gov(s):
+                        add_to_current(s)
+                        continue
+
+                    # 3) Caso contrário: isso é nome do PRÓXIMO registro.
+                    # Finaliza o atual e joga esse fragmento para pending.
+                    finalize_current()
+                    add_to_pending(s)
                     continue
 
-                # Qualquer outra linha dentro do capture, ignoramos (ruído)
+                # qualquer outra linha dentro da tabela é ruído
                 continue
 
-    # flush final
     finalize_current()
 
     df = pd.DataFrame(records, columns=FINAL_COLUMNS)
@@ -317,13 +327,6 @@ def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
     df = df[FINAL_COLUMNS]
 
     return df
-
-
-def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    out = io.BytesIO()
-    df.to_excel(out, index=False)
-    out.seek(0)
-    return out.read()
 
 
 def validate_extraction(df: pd.DataFrame) -> dict:
