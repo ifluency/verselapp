@@ -1,74 +1,64 @@
-import io
-import cgi
-from http.server import BaseHTTPRequestHandler
-import pdfplumber
+from parser import process_pdf_bytes_debug, debug_dump, validate_extraction
+
+def _read_pdf_from_multipart(req):
+    """
+    Vercel Python: normalmente req.files funciona em algumas libs/frameworks.
+    Como cada setup varia, deixei fallback pra bytes diretos também.
+    """
+    # 1) Se seu runtime fornece req.files
+    if hasattr(req, "files") and req.files and "file" in req.files:
+        f = req.files["file"]
+        return f.read()
+
+    # 2) Se vier como body puro (application/pdf)
+    if hasattr(req, "body") and req.body:
+        return req.body
+
+    # 3) Se vier como data (algumas versões)
+    if hasattr(req, "get_data"):
+        return req.get_data()
+
+    raise ValueError("PDF não encontrado. Envie via multipart (campo 'file') ou body bruto.")
 
 
-def dump_first_pages(pdf_bytes: bytes, pages=3, max_lines=260) -> str:
-    out = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        n_pages = min(pages, len(pdf.pages))
-        for p in range(n_pages):
-            out.append("=" * 70)
-            out.append(f"PAGE {p+1}")
-            out.append("=" * 70)
+def handler(req):
+    if getattr(req, "method", "GET") != "POST":
+        return {
+            "statusCode": 405,
+            "headers": {"content-type": "application/json; charset=utf-8"},
+            "body": '{"error":"Use POST com multipart: file=<pdf>"}',
+        }
 
-            txt = pdf.pages[p].extract_text(layout=True) or ""
-            lines = txt.splitlines()
-            out.append(f"Total linhas extraídas: {len(lines)}")
+    try:
+        pdf_bytes = _read_pdf_from_multipart(req)
+        df, debug_records = process_pdf_bytes_debug(pdf_bytes)
 
-            for i, line in enumerate(lines[:max_lines]):
-                out.append(f"{i:03d} | {line}")
+        report = {
+            "validation": validate_extraction(df),
+            "rows": int(len(df)),
+        }
+        dump_txt = debug_dump(df, debug_records, max_rows=80)
 
-            out.append("")  # linha em branco entre páginas
-    return "\n".join(out)
+        # devolve JSON com o dump (pra UI mostrar bonitinho)
+        import json
+        body = json.dumps(
+            {
+                "report": report,
+                "debug_dump": dump_txt,
+            },
+            ensure_ascii=False
+        )
 
+        return {
+            "statusCode": 200,
+            "headers": {"content-type": "application/json; charset=utf-8"},
+            "body": body,
+        }
 
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        try:
-            content_type = self.headers.get("content-type", "")
-            if "multipart/form-data" not in content_type:
-                return self._send_text(400, "Envie multipart/form-data com campo 'file'.")
-
-            content_length = int(self.headers.get("content-length", "0"))
-            if content_length <= 0:
-                return self._send_text(400, "Corpo vazio.")
-
-            body = self.rfile.read(content_length)
-
-            environ = {
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-                "CONTENT_LENGTH": str(content_length),
-            }
-            fp = io.BytesIO(body)
-            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
-
-            if "file" not in form:
-                return self._send_text(400, "Campo 'file' ausente.")
-
-            pdf_bytes = form["file"].file.read()
-            txt = dump_first_pages(pdf_bytes, pages=3, max_lines=320)
-
-            data = txt.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Disposition", 'attachment; filename="dump.txt"')
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        except Exception as e:
-            self._send_text(500, f"Erro no debug: {str(e)}")
-
-    def do_GET(self):
-        self._send_text(405, "Use POST com multipart/form-data (campo 'file').")
-
-    def _send_text(self, status: int, msg: str):
-        data = (msg or "").encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+    except Exception as e:
+        import json
+        return {
+            "statusCode": 500,
+            "headers": {"content-type": "application/json; charset=utf-8"},
+            "body": json.dumps({"error": str(e)}, ensure_ascii=False),
+        }
