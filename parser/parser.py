@@ -10,11 +10,20 @@ RE_PAGE_MARK = re.compile(r"^\s*\d+\s+de\s+\d+\s*$", re.IGNORECASE)
 RE_DATE_TOKEN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 RE_ROW_START = re.compile(r"^\s*(\d+)\s+([IVX]+)\b", re.IGNORECASE)
 
+INCISO_TO_FONTE = {
+    "I": "Compras.gov.br",
+    "II": "Contratações similares",
+    "III": "Mídias Especializadas",
+    "IV": "Fornecedor",
+    "V": "Nota Fiscal Eletrônicas",
+}
+
 FINAL_COLUMNS = [
     "Item",
     "CATMAT",
     "Nº",
     "Inciso",
+    "Fonte",
     "Quantidade",
     "Preço unitário",
     "Data",
@@ -65,7 +74,7 @@ def parse_row_fields(row_line: str):
     """
     Parseia a linha do registro:
       "4 I 110 Unidade R$ 150,4500 05/12/2025 Sim"
-    Retorna apenas campos da tabela (sem Nome).
+    Retorna campos da tabela (sem Nome).
     """
     s = normalize_text(row_line)
     toks = s.split()
@@ -139,11 +148,6 @@ def parse_row_fields(row_line: str):
 
 
 def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
-    """
-    Retorna:
-      df_final (FINAL_COLUMNS sem Nome)
-      debug_records (somente para contagem/inspeção)
-    """
     records = []
     debug_records = []
 
@@ -196,11 +200,15 @@ def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
                     if not fields:
                         continue
 
+                    inciso = fields["Inciso"]
+                    fonte = INCISO_TO_FONTE.get(inciso, "")
+
                     row = {
                         "Item": f"Item {current_item}" if current_item is not None else None,
                         "CATMAT": current_catmat,
                         "Nº": fields["Nº"],
-                        "Inciso": fields["Inciso"],
+                        "Inciso": inciso,
+                        "Fonte": fonte,
                         "Quantidade": fields["Quantidade"],
                         "Preço unitário": fields["Preço unitário"],
                         "Data": fields["Data"],
@@ -208,16 +216,7 @@ def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
                     }
                     records.append(row)
 
-                    debug_records.append({
-                        "Item": row["Item"],
-                        "CATMAT": row["CATMAT"],
-                        "Nº": row["Nº"],
-                        "Inciso": row["Inciso"],
-                        "Quantidade": row["Quantidade"],
-                        "Preço unitário": row["Preço unitário"],
-                        "Data": row["Data"],
-                        "Compõe": row["Compõe"],
-                    })
+                    debug_records.append(row.copy())
 
     df = pd.DataFrame(records, columns=FINAL_COLUMNS)
 
@@ -249,13 +248,14 @@ def validate_extraction(df: pd.DataFrame) -> dict:
 def debug_dump(df: pd.DataFrame, debug_records: list, max_rows: int = 120) -> str:
     out = []
     out.append("=" * 120)
-    out.append("DEBUG DUMP — REGISTROS EXTRAÍDOS (sem coluna Nome)")
+    out.append("DEBUG DUMP — REGISTROS EXTRAÍDOS (sem coluna Nome; com Fonte)")
     out.append("=" * 120)
 
     for i, r in enumerate(debug_records[:max_rows], start=1):
         out.append(
             f"[{i:03d}] {r.get('Item')} | CATMAT {r.get('CATMAT')} | Nº {r.get('Nº')} | "
-            f"Inciso {r.get('Inciso')} | Qtd {r.get('Quantidade')} | Preço {r.get('Preço unitário')} | "
+            f"Inciso {r.get('Inciso')} | Fonte {r.get('Fonte')} | "
+            f"Qtd {r.get('Quantidade')} | Preço {r.get('Preço unitário')} | "
             f"Data {r.get('Data')} | Compõe {r.get('Compõe')}"
         )
 
