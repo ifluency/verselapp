@@ -1,73 +1,266 @@
+import re
 import io
-import cgi
+import pdfplumber
 import pandas as pd
-from http.server import BaseHTTPRequestHandler
 
-# Importa a lógica do arquivo parser/__init__.py
-from parser import process_pdf_bytes_debug
+RE_ITEM = re.compile(r"^Item:\s*(\d+)\b", re.IGNORECASE)
+RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
 
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        try:
-            # 1. Validação básica do Request
-            content_type = self.headers.get("content-type", "")
-            if "multipart/form-data" not in content_type:
-                return self._send_text(400, "Envie multipart/form-data com campo 'file'.")
+RE_PAGE_MARK = re.compile(r"^\s*\d+\s+de\s+\d+\s*$", re.IGNORECASE)
+RE_DATE_TOKEN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+RE_ROW_START = re.compile(r"^\s*(\d+)\s+([IVX]+)\b", re.IGNORECASE)
 
-            content_length = int(self.headers.get("content-length", "0"))
-            if content_length <= 0:
-                return self._send_text(400, "Corpo vazio.")
+FINAL_COLUMNS = [
+    "Item",
+    "CATMAT",
+    "Nº",
+    "Inciso",
+    "Quantidade",
+    "Preço unitário",
+    "Data",
+    "Compõe",
+]
 
-            # 2. Leitura do PDF enviado
-            body = self.rfile.read(content_length)
-            environ = {
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-                "CONTENT_LENGTH": str(content_length),
-            }
-            fp = io.BytesIO(body)
-            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
 
-            if "file" not in form:
-                return self._send_text(400, "Campo 'file' ausente.")
+def clean_spaces(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip()
 
-            pdf_bytes = form["file"].file.read()
-            if not pdf_bytes:
-                return self._send_text(400, "Arquivo 'file' vazio.")
 
-            # 3. Processamento (Lógica corrigida no __init__.py)
-            # A variável 'debug_records' é ignorada pois queremos o Excel final
-            df, _ = process_pdf_bytes_debug(pdf_bytes)
+def normalize_text(s: str) -> str:
+    s = (s or "").replace("\u00a0", " ")
+    s = clean_spaces(s)
 
-            # 4. Geração do Excel em Memória
-            output = io.BytesIO()
-            # Engine 'openpyxl' é necessária para escrever xlsx
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Fornecedores')
-            
-            excel_data = output.getvalue()
+    # gov. br -> gov.br
+    s = re.sub(r"(gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
 
-            # 5. Envio da Resposta (Download do arquivo)
-            self.send_response(200)
-            # MIME type correto para Excel .xlsx
-            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            self.send_header("Content-Disposition", 'attachment; filename="fornecedores_corrigido.xlsx"')
-            self.send_header("Content-Length", str(len(excel_data)))
-            self.end_headers()
-            
-            self.wfile.write(excel_data)
+    # Compras.gov. br -> Compras.gov.br
+    s = re.sub(r"(Compras\.gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
 
-        except Exception as e:
-            # Em caso de erro, retorna texto para facilitar o debug
-            return self._send_text(500, f"Erro interno: {repr(e)}")
+    # “110Unidade” -> “110 Unidade”
+    s = re.sub(r"(\d)([A-Za-zÀ-ÿ])", r"\1 \2", s)
+    s = re.sub(r"([A-Za-zÀ-ÿ])(\d)", r"\1 \2", s)
 
-    def do_GET(self):
-        self._send_text(405, "Use POST com multipart/form-data (campo 'file').")
+    # R$ com espaços
+    s = re.sub(r"R\$\s+", "R$ ", s)
 
-    def _send_text(self, status: int, msg: str):
-        data = (msg or "").encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+    return s
+
+
+def is_table_on(line: str) -> bool:
+    s = normalize_text(line)
+    return ("Período:" in s) or ("Periodo:" in s)
+
+
+def is_table_off(line: str) -> bool:
+    s = normalize_text(line).lower()
+    return s.startswith("legenda")
+
+
+def is_header(line: str) -> bool:
+    s = normalize_text(line).lower()
+    return s.startswith("nº inciso nome quantidade")
+
+
+def parse_row_fields(row_line: str):
+    """
+    Parseia a linha do registro:
+      "4 I 110 Unidade R$ 150,4500 05/12/2025 Sim"
+    Retorna apenas campos da tabela (sem Nome).
+    """
+    s = normalize_text(row_line)
+    toks = s.split()
+
+    if len(toks) < 6:
+        return None
+    if not toks[0].isdigit():
+        return None
+    if not re.fullmatch(r"[IVX]+", toks[1], flags=re.IGNORECASE):
+        return None
+
+    no = toks[0]
+    inciso = toks[1].upper()
+
+    compoe = toks[-1]
+    if compoe not in ("Sim", "Não"):
+        return None
+
+    dates = [t for t in toks if RE_DATE_TOKEN.fullmatch(t)]
+    if not dates:
+        return None
+    data = dates[-1]
+
+    # localizar R$
+    r_idx = None
+    for i, t in enumerate(toks):
+        if t == "R$" or t.startswith("R$"):
+            r_idx = i
+            break
+    if r_idx is None:
+        return None
+
+    # preço cru (somente números com vírgula/ponto)
+    if toks[r_idx] == "R$":
+        if r_idx + 1 >= len(toks):
+            return None
+        preco_raw = toks[r_idx + 1]
+    else:
+        preco_raw = toks[r_idx].replace("R$", "").strip()
+    if not preco_raw:
+        return None
+
+    # quantidade: procurar "<num> Unidade/Embalagem"
+    qtd_idx = None
+    for i in range(2, len(toks) - 1):
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", toks[i]) and (
+            toks[i + 1].lower().startswith("unidade") or toks[i + 1].lower().startswith("embalagem")
+        ):
+            qtd_idx = i
+            break
+
+    # fallback: último número antes do R$
+    if qtd_idx is None:
+        for j in range(r_idx - 1, 1, -1):
+            if re.fullmatch(r"\d+(?:[.,]\d+)?", toks[j]):
+                qtd_idx = j
+                break
+    if qtd_idx is None:
+        return None
+
+    quantidade = toks[qtd_idx]
+
+    return {
+        "Nº": no,
+        "Inciso": inciso,
+        "Quantidade": quantidade,
+        "Preço unitário": preco_raw,
+        "Data": data,
+        "Compõe": compoe,
+    }
+
+
+def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
+    """
+    Retorna:
+      df_final (FINAL_COLUMNS sem Nome)
+      debug_records (somente para contagem/inspeção)
+    """
+    records = []
+    debug_records = []
+
+    current_item = None
+    current_catmat = None
+    capture = False
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text(layout=True) or ""
+            lines = text.splitlines()
+
+            for raw in lines:
+                line = clean_spaces(raw.replace("\u00a0", " "))
+                if not line:
+                    continue
+                if RE_PAGE_MARK.fullmatch(line):
+                    continue
+
+                # novo item
+                m_item = RE_ITEM.match(line)
+                if m_item:
+                    capture = False
+                    current_item = int(m_item.group(1))
+                    current_catmat = None
+                    continue
+
+                # CATMAT
+                m_cat = RE_CATMAT.search(line)
+                if m_cat:
+                    current_catmat = m_cat.group(1)
+
+                # liga/desliga tabela
+                if is_table_on(line):
+                    capture = True
+                    continue
+                if is_table_off(line):
+                    capture = False
+                    continue
+                if not capture:
+                    continue
+
+                s = normalize_text(line)
+                if is_header(s):
+                    continue
+
+                # linha do registro
+                if RE_ROW_START.match(s):
+                    fields = parse_row_fields(s)
+                    if not fields:
+                        continue
+
+                    row = {
+                        "Item": f"Item {current_item}" if current_item is not None else None,
+                        "CATMAT": current_catmat,
+                        "Nº": fields["Nº"],
+                        "Inciso": fields["Inciso"],
+                        "Quantidade": fields["Quantidade"],
+                        "Preço unitário": fields["Preço unitário"],
+                        "Data": fields["Data"],
+                        "Compõe": fields["Compõe"],
+                    }
+                    records.append(row)
+
+                    debug_records.append({
+                        "Item": row["Item"],
+                        "CATMAT": row["CATMAT"],
+                        "Nº": row["Nº"],
+                        "Inciso": row["Inciso"],
+                        "Quantidade": row["Quantidade"],
+                        "Preço unitário": row["Preço unitário"],
+                        "Data": row["Data"],
+                        "Compõe": row["Compõe"],
+                    })
+
+    df = pd.DataFrame(records, columns=FINAL_COLUMNS)
+
+    # somente Compõe=Sim
+    if "Compõe" in df.columns:
+        df = df[df["Compõe"] == "Sim"].copy()
+
+    df.reset_index(drop=True, inplace=True)
+
+    # garante ordem/colunas
+    for col in FINAL_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[FINAL_COLUMNS]
+
+    return df, debug_records
+
+
+def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
+    df, _ = process_pdf_bytes_debug(pdf_bytes)
+    return df
+
+
+def validate_extraction(df: pd.DataFrame) -> dict:
+    total = int(len(df))
+    return {"total_rows": total}
+
+
+def debug_dump(df: pd.DataFrame, debug_records: list, max_rows: int = 120) -> str:
+    out = []
+    out.append("=" * 120)
+    out.append("DEBUG DUMP — REGISTROS EXTRAÍDOS (sem coluna Nome)")
+    out.append("=" * 120)
+
+    for i, r in enumerate(debug_records[:max_rows], start=1):
+        out.append(
+            f"[{i:03d}] {r.get('Item')} | CATMAT {r.get('CATMAT')} | Nº {r.get('Nº')} | "
+            f"Inciso {r.get('Inciso')} | Qtd {r.get('Quantidade')} | Preço {r.get('Preço unitário')} | "
+            f"Data {r.get('Data')} | Compõe {r.get('Compõe')}"
+        )
+
+    out.append("")
+    out.append(f"Total registros parseados (antes do filtro Compõe=Sim): {len(debug_records)}")
+    out.append(f"Total linhas no DF final (Compõe=Sim): {len(df)}")
+    out.append("=" * 120)
+    return "\n".join(out)
