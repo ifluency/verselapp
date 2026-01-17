@@ -1,12 +1,12 @@
-import re
 import io
+import re
 import pdfplumber
 import pandas as pd
 
 RE_ITEM = re.compile(r"^Item:\s*(\d+)\b", re.IGNORECASE)
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
-
 RE_PAGE_MARK = re.compile(r"^\s*\d+\s+de\s+\d+\s*$", re.IGNORECASE)
+
 RE_DATE_TOKEN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 RE_ROW_START = re.compile(r"^\s*(\d+)\s+([IVX]+)\b", re.IGNORECASE)
 
@@ -25,7 +25,7 @@ FINAL_COLUMNS = [
     "Inciso",
     "Fonte",
     "Quantidade",
-    "Preço unitário",
+    "Preço unitário",  # mantém texto com vírgula (ex: 150,4500)
     "Data",
     "Compõe",
 ]
@@ -39,17 +39,16 @@ def normalize_text(s: str) -> str:
     s = (s or "").replace("\u00a0", " ")
     s = clean_spaces(s)
 
-    # gov. br -> gov.br
+    # Cola quebras comuns: gov. br -> gov.br
     s = re.sub(r"(gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
-
-    # Compras.gov. br -> Compras.gov.br
-    s = re.sub(r"(Compras\.gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
+    # Cola Compras.gov. br -> Compras.gov.br
+    s = re.sub(r"(compras\.gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
 
     # “110Unidade” -> “110 Unidade”
     s = re.sub(r"(\d)([A-Za-zÀ-ÿ])", r"\1 \2", s)
     s = re.sub(r"([A-Za-zÀ-ÿ])(\d)", r"\1 \2", s)
 
-    # R$ com espaços
+    # Normaliza R$ com espaço
     s = re.sub(r"R\$\s+", "R$ ", s)
 
     return s
@@ -71,11 +70,6 @@ def is_header(line: str) -> bool:
 
 
 def parse_row_fields(row_line: str):
-    """
-    Parseia a linha do registro:
-      "4 I 110 Unidade R$ 150,4500 05/12/2025 Sim"
-    Retorna campos da tabela (sem Nome).
-    """
     s = normalize_text(row_line)
     toks = s.split()
 
@@ -107,14 +101,15 @@ def parse_row_fields(row_line: str):
     if r_idx is None:
         return None
 
-    # preço cru (somente números com vírgula/ponto)
+    # preço cru em texto, com vírgula
     if toks[r_idx] == "R$":
         if r_idx + 1 >= len(toks):
             return None
-        preco_raw = toks[r_idx + 1]
+        preco_txt = toks[r_idx + 1]
     else:
-        preco_raw = toks[r_idx].replace("R$", "").strip()
-    if not preco_raw:
+        preco_txt = toks[r_idx].replace("R$", "").strip()
+
+    if not preco_txt:
         return None
 
     # quantidade: procurar "<num> Unidade/Embalagem"
@@ -141,15 +136,14 @@ def parse_row_fields(row_line: str):
         "Nº": no,
         "Inciso": inciso,
         "Quantidade": quantidade,
-        "Preço unitário": preco_raw,
+        "Preço unitário": preco_txt,  # texto, ex: 150,4500
         "Data": data,
         "Compõe": compoe,
     }
 
 
-def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
+def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
     records = []
-    debug_records = []
 
     current_item = None
     current_catmat = None
@@ -194,7 +188,7 @@ def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
                 if is_header(s):
                     continue
 
-                # linha do registro
+                # linha de registro
                 if RE_ROW_START.match(s):
                     fields = parse_row_fields(s)
                     if not fields:
@@ -216,8 +210,6 @@ def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
                     }
                     records.append(row)
 
-                    debug_records.append(row.copy())
-
     df = pd.DataFrame(records, columns=FINAL_COLUMNS)
 
     # somente Compõe=Sim
@@ -226,41 +218,10 @@ def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list]:
 
     df.reset_index(drop=True, inplace=True)
 
-    # garante ordem/colunas
+    # garante colunas e ordem
     for col in FINAL_COLUMNS:
         if col not in df.columns:
             df[col] = None
     df = df[FINAL_COLUMNS]
 
-    return df, debug_records
-
-
-def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
-    df, _ = process_pdf_bytes_debug(pdf_bytes)
     return df
-
-
-def validate_extraction(df: pd.DataFrame) -> dict:
-    total = int(len(df))
-    return {"total_rows": total}
-
-
-def debug_dump(df: pd.DataFrame, debug_records: list, max_rows: int = 120) -> str:
-    out = []
-    out.append("=" * 120)
-    out.append("DEBUG DUMP — REGISTROS EXTRAÍDOS (sem coluna Nome; com Fonte)")
-    out.append("=" * 120)
-
-    for i, r in enumerate(debug_records[:max_rows], start=1):
-        out.append(
-            f"[{i:03d}] {r.get('Item')} | CATMAT {r.get('CATMAT')} | Nº {r.get('Nº')} | "
-            f"Inciso {r.get('Inciso')} | Fonte {r.get('Fonte')} | "
-            f"Qtd {r.get('Quantidade')} | Preço {r.get('Preço unitário')} | "
-            f"Data {r.get('Data')} | Compõe {r.get('Compõe')}"
-        )
-
-    out.append("")
-    out.append(f"Total registros parseados (antes do filtro Compõe=Sim): {len(debug_records)}")
-    out.append(f"Total linhas no DF final (Compõe=Sim): {len(df)}")
-    out.append("=" * 120)
-    return "\n".join(out)
