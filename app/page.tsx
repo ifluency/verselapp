@@ -312,6 +312,17 @@ export default function Page() {
       const eligible = last !== null && last > 0 && calc !== null && calc <= 1.2 * last;
       const allowManual = eligible || !!ov;
 
+      // Cores do botão quando elegível e ainda não ajustado:
+      // - Vermelho: último licitado > valor calculado (valor calculado ficou abaixo do histórico)
+      // - Amarelo: valor calculado está até 20% acima do último licitado (calc <= 1.2 * last)
+      // - Verde: já ajustado (override salvo)
+      let adjustColor: "red" | "yellow" | "none" | "green" = "none";
+      if (ov) {
+        adjustColor = "green";
+      } else if (eligible && last !== null && calc !== null) {
+        adjustColor = calc < last ? "red" : "yellow";
+      }
+
       let modo = "Auto";
       let metodo = "";
       let valorFinal: number | null = calc;
@@ -334,6 +345,7 @@ export default function Page() {
         last,
         eligible,
         allowManual,
+        adjustColor,
         modo,
         metodo,
         valorFinal,
@@ -344,7 +356,7 @@ export default function Page() {
   }, [preview, lastQuotes, overrides]);
 
   return (
-    <main style={{ maxWidth: 1400, margin: "32px auto", padding: "0 16px" }}>
+    <main style={{ maxWidth: "100%", margin: "12px auto", padding: "0 8px" }}>
       <h1>UPDE — Preços de Referência (Prévia + Ajuste Manual)</h1>
       <p>
         1) Faça upload do PDF do ComprasGOV → 2) Veja a prévia → 3) Informe o último licitado → 4)
@@ -406,13 +418,13 @@ export default function Page() {
       {status && <p style={{ marginTop: 12 }}>{status}</p>}
 
       {preview.length > 0 && (
-        <div style={{ marginTop: 20, overflowX: "hidden" }}>
+        <div style={{ marginTop: 16, overflowX: "hidden" }}>
           <table
             style={{
               borderCollapse: "collapse",
               width: "100%",
               tableLayout: "fixed",
-              fontSize: 12,
+              fontSize: 14,
             }}
           >
             <colgroup>
@@ -449,7 +461,7 @@ export default function Page() {
                     key={h}
                     style={{
                       border: "1px solid #ddd",
-                      padding: "6px 6px",
+                      padding: "8px 8px",
                       background: "#f7f7f7",
                       textAlign: "left",
                       whiteSpace: "normal",
@@ -466,33 +478,33 @@ export default function Page() {
                   key={r.item}
                   style={{ background: rowIdx % 2 === 0 ? "#ffffff" : "#f4f4f4" }}
                 >
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.item}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.catmat}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.n_bruto}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.n_final}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.excl_altos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.excl_baixos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.item}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.catmat}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.n_bruto}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.n_final}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.excl_altos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.excl_baixos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
                     {fmtBRL(r.valor_calculado)}
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
                     <input
                       value={lastQuotes[r.item] || ""}
                       onChange={(e) =>
                         setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
                       }
                       placeholder="ex: 1.234,56"
-                      style={{ width: 90, fontSize: 12, padding: "2px 4px" }}
+                      style={{ width: 88, fontSize: 13, padding: "3px 6px" }}
                     />
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.modo}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.modo}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
                     {fmtBRL(r.valorFinal)}
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
                     {fmtBRL(r.diffAbs)}
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button
                         onClick={() => openManualModal(r)}
@@ -504,34 +516,48 @@ export default function Page() {
                               : "Ajustar manualmente"
                             : "Só disponível quando Valor calculado ≤ 1,2× Último licitado"
                         }
-                        style={
-                          r.allowManual
-                            ? r.hasOverride
-                              ? {
-                                  background: "#2e7d32",
-                                  color: "white",
-                                  border: "1px solid #1b5e20",
-                                  fontWeight: 700,
-                                  padding: "4px 10px",
-                                  borderRadius: 6,
-                                  cursor: "pointer",
-                                }
-                              : {
-                                  background: "#f1c232",
-                                  color: "#000",
-                                  border: "1px solid #c9a100",
-                                  fontWeight: 700,
-                                  padding: "4px 10px",
-                                  borderRadius: 6,
-                                  cursor: "pointer",
-                                }
-                            : {
-                                padding: "4px 10px",
-                                borderRadius: 6,
-                                cursor: "not-allowed",
-                                opacity: 0.6,
-                              }
-                        }
+                        style={(() => {
+                          if (!r.allowManual) {
+                            return {
+                              padding: "4px 10px",
+                              borderRadius: 6,
+                              cursor: "not-allowed",
+                              opacity: 0.6,
+                            };
+                          }
+                          if (r.adjustColor === "green") {
+                            return {
+                              background: "#2e7d32",
+                              color: "white",
+                              border: "1px solid #1b5e20",
+                              fontWeight: 700,
+                              padding: "4px 10px",
+                              borderRadius: 6,
+                              cursor: "pointer",
+                            };
+                          }
+                          if (r.adjustColor === "red") {
+                            return {
+                              background: "#c62828",
+                              color: "white",
+                              border: "1px solid #8e0000",
+                              fontWeight: 700,
+                              padding: "4px 10px",
+                              borderRadius: 6,
+                              cursor: "pointer",
+                            };
+                          }
+                          // yellow
+                          return {
+                            background: "#f1c232",
+                            color: "#000",
+                            border: "1px solid #c9a100",
+                            fontWeight: 700,
+                            padding: "4px 10px",
+                            borderRadius: 6,
+                            cursor: "pointer",
+                          };
+                        })()}
                       >
                         Ajustar
                       </button>
@@ -609,7 +635,7 @@ export default function Page() {
                         checked={modalSelected.includes(e.idx)}
                         onChange={() => toggleModalIndex(e.idx)}
                       />
-                      <span style={{ width: 60, opacity: 0.7 }}>[{e.idx + 1}]</span>
+                      <span style={{ width: 60, opacity: 0.7 }}>[{rowIdx + 1}]</span>
                       <span style={{ width: 110, fontFamily: "monospace" }}>{fmtSmart(e.valor)}</span>
                       <span style={{ flex: 1, opacity: 0.85 }}>Fonte: {e.fonte || "-"}</span>
                     </label>
