@@ -69,33 +69,61 @@ def audit_item(vals, upper=1.25, lower=0.75):
     }
 
 
-def build_audit_txt(df, max_items=3):
-    # df esperado do parser (já filtrado Compõe=Sim)
-    if df is None or df.empty:
-        return "DF vazio. Nenhuma linha Compõe=Sim encontrada.\n"
+def build_audit_txt(df, max_items=5, min_n=5):
+    """
+    Debug dos cálculos:
+    - Seleciona os primeiros 'max_items' itens cuja contagem BRUTA (linhas no DF) seja >= min_n
+    - Mostra também quantos preços realmente viraram número (parse ok).
+    """
+    if df is None or getattr(df, "empty", True):
+        return "DF vazio. Nenhuma linha encontrada.\n"
 
-    if "Preço unitário" not in df.columns or "Item" not in df.columns:
-        return f"Colunas esperadas ausentes. Colunas encontradas: {list(df.columns)}\n"
-
-    d = df.copy()
-    d["preco_num"] = d["Preço unitário"].apply(preco_txt_to_float)
-    d = d[d["preco_num"].notna()].copy()
+    required = {"Item", "Preço unitário"}
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        return f"Colunas esperadas ausentes: {missing}. Colunas encontradas: {list(df.columns)}\n"
 
     out = []
-    out.append("DEBUG — AUDITORIA DOS CÁLCULOS (3 primeiros itens com N > 5)")
-    out.append("Regras: Excesso se v/média_outros > 1.25 | Inexequível se v/média_outros < 0.75")
+    out.append("DEBUG — AUDITORIA DOS CÁLCULOS")
+    out.append(f"Critério: itens com N BRUTO >= {min_n} (antes de parsing e antes de excluir alto/baixo)")
+    out.append(f"Mostrando os {max_items} primeiros itens que atendem o critério.")
+    out.append("Regras:")
+    out.append(" - Excessivamente Elevados: v / média_outros > 1.25")
+    out.append(" - Inexequíveis: v / média_outros < 0.75")
     out.append("")
 
     count = 0
-    for item, g in d.groupby("Item", sort=False):
-        vals = g["preco_num"].astype(float).tolist()
-        if len(vals) <= 5:
+
+    # Importante: agrupa no DF original (N BRUTO)
+    for item, g_raw in df.groupby("Item", sort=False):
+        n_bruto = len(g_raw)
+
+        # Critério baseado no N BRUTO (não depende do N final)
+        if n_bruto < min_n:
+            continue
+
+        # Agora faz parsing do preço só para o cálculo
+        g = g_raw.copy()
+        g["preco_num"] = g["Preço unitário"].apply(preco_txt_to_float)
+        vals = g["preco_num"].dropna().astype(float).tolist()
+        n_parse = len(vals)
+
+        out.append("=" * 100)
+        out.append(f"{item} | N bruto = {n_bruto} | N preços parseados = {n_parse}")
+
+        if n_parse < 2:
+            out.append("⚠️ Poucos preços parseados para auditoria (precisa de pelo menos 2).")
+            out.append("Valores originais da coluna 'Preço unitário':")
+            out.append(", ".join([str(x) for x in g_raw["Preço unitário"].tolist()[:50]]))
+            out.append("")
+            count += 1
+            if count >= max_items:
+                break
             continue
 
         rep = audit_item(vals, upper=1.25, lower=0.75)
-        out.append("=" * 90)
-        out.append(f"{item} | N inicial = {len(rep['iniciais'])}")
-        out.append("Valores iniciais:")
+
+        out.append("Valores (iniciais parseados):")
         out.append(", ".join([f"{v:.4f}" for v in rep["iniciais"]]))
         out.append("")
 
@@ -127,7 +155,7 @@ def build_audit_txt(df, max_items=3):
             break
 
     if count == 0:
-        out.append("Nenhum item com N > 5 encontrado no DF (Compõe=Sim).")
+        out.append(f"Nenhum item com N BRUTO >= {min_n} encontrado no DF.")
 
     return "\n".join(out) + "\n"
 
@@ -159,7 +187,9 @@ class handler(BaseHTTPRequestHandler):
             pdf_bytes = form["file"].file.read()
 
             df = process_pdf_bytes(pdf_bytes)
-            txt = build_audit_txt(df, max_items=3)
+
+            # Mostra 5 primeiros itens com N BRUTO >= 5
+            txt = build_audit_txt(df, max_items=5, min_n=5)
 
             data = txt.encode("utf-8")
             self.send_response(200)
