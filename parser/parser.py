@@ -494,7 +494,13 @@ def _audit_item(vals, upper=1.25, lower=0.75):
 
 
 def build_memoria_calculo_txt(df: pd.DataFrame) -> str:
-    """Gera um relatorio TXT (monoespacado) com o passo a passo dos calculos para TODOS os itens."""
+    """Gera um relatorio TXT (monoespacado) com o passo a passo dos calculos para TODOS os itens.
+
+    Observacao: o texto inclui marcadores simples para estilos no PDF:
+      - <<TITLE>>...<<ENDTITLE>> : titulo (fonte maior, negrito)
+      - <<B>>...<<ENDB>>         : negrito
+      - <<LINK|URL>>...<<ENDLINK>> : hyperlink
+    """
     if df is None or getattr(df, "empty", True):
         return "DF vazio. Nenhuma linha encontrada.\n"
 
@@ -504,18 +510,50 @@ def build_memoria_calculo_txt(df: pd.DataFrame) -> str:
     if missing:
         return f"Colunas esperadas ausentes: {missing}. Colunas encontradas: {list(df.columns)}\n"
 
-    out = []
-    out.append("MEMORIA DE CALCULO — AUDITORIA DOS PRECOS")
-    out.append("Regras aplicadas:")
-    out.append(" - Se N < 5: CV decide media/mediana (CV < 0,25 -> media; senao -> mediana)")
-    out.append(" - Se N >= 5: filtro por ratio e media")
-    out.append("    - Excessivamente Elevados: v / media_outros > 1,25")
-    out.append("    - Inexequiveis: v / media_outros < 0,75 (apos remover elevados)")
+    def _split_lines(s: str) -> list[str]:
+        # "||" significa quebra de linha (conforme solicitado)
+        parts = [p.strip() for p in (s or "").split("||")]
+        return [p for p in parts if p != ""]
+
+    # helper para CV como percentual PT-BR (duas casas)
+    def _cv_pct_txt(cv: float | None) -> str:
+        if cv is None:
+            return ""
+        pct = cv * 100.0
+        # duas casas e virgula
+        s = f"{pct:.2f}".replace(".", ",")
+        return f"{s}%"
+
+    out: list[str] = []
+
+    # Titulo (duas linhas) com fonte maior
+    out.append("<<TITLE>>MEMÓRIA DE CÁLCULO - TABELA COMPARATIVA DE VALORES<<ENDTITLE>>")
+    out.append("<<TITLE>>UPDE - HUSM - UFSM<<ENDTITLE>>")
+    out.append("")
+
+    # Metodologia com hyperlink
+    out.append(
+        "<<LINK|https://www.stj.jus.br/publicacaoinstitucional/index.php/MOP/issue/view/2096/showToc>>"
+        "Metodologias de exclusão adotadas conforme Manual de Orientação: Pesquisa de Preços - 4ª edição, do Superior Tribunal de Justiça"
+        "<<ENDLINK>>"
+    )
+    out.append("")
+
+    regras = (
+        "Se o número de cotações consideradas na pesquisa de pesquisa de preços realizada no ComprasGOV for: ||"
+        "\t1. Único, considera-se como cotação única. ||"
+        "\t2. Maior que 1 e menor do que 5, é calculado o coeficiente de variação. Caso este seja menor que 0,25, utiliza-se a média; caso maior, utiliza-se a mediana. ||"
+        "\t3. Maior ou igual a 5, utiliza-se a exclusão dos preços que se destoam dos demais, para, posteriormente, realizar a média entre os restantes, da seguinte forma: ||"
+        "\t\ta) Excluem-se os preços distoantes superiores, realizando o cálculo da média em relação aos demais (valor/média dos demais). Caso esse valor seja superior à 1,25 (25%), considera-se como excessivamente elevado. ||"
+        "\t\tb) Excluem-se, dos preços restantes, os distoantes inferiores,  realizando o cálculo da média em relação aos demais (valor/média dos demais). Caso o valor seja inferior à 0,75 (75%), considera-se como inexequível. ||"
+        "\t\tc) Realiza-se a média entre os valores restantes."
+    )
+    out.extend(_split_lines(regras))
     out.append("")
 
     for item, g_raw in df.groupby("Item", sort=False):
-        out.append("=" * 110)
-        out.append(str(item))
+        out.append(f"<<B>>{'_' * 50}<<ENDB>>")
+        out.append(f"<<B>>{str(item)}<<ENDB>>")
 
         g = g_raw.copy()
         g["preco_num"] = g["Preço unitário"].apply(_preco_txt_to_float_for_memoria)
@@ -523,20 +561,19 @@ def build_memoria_calculo_txt(df: pd.DataFrame) -> str:
 
         n_bruto = len(g_raw)
         n_parse = len(vals)
-        out.append(f"N bruto (linhas): {n_bruto} | N precos parseados: {n_parse}")
+        out.append(f"Amostrar Iniciais: {n_bruto}")
 
         if n_parse == 0:
-            out.append("⚠️ Nenhum preco conseguiu ser convertido para numero.")
-            out.append("Valores originais da coluna 'Preço unitário' (primeiros 50):")
+            out.append("Nenhum valor conseguiu ser convertido para número.")
+            out.append('Valores originais da coluna "Preço Unitário" (primeiros 50):')
             out.append(", ".join([str(x) for x in g_raw["Preço unitário"].tolist()[:50]]))
             out.append("")
             continue
 
         # Caso com poucos valores
         if n_parse == 1:
-            out.append("⚠️ Apenas 1 preco numerico. Nao e possivel aplicar CV nem filtros.")
-            out.append(f"Valor unico: {vals[0]:.4f}")
-            out.append("Preco Final escolhido: valor unico")
+            out.append(f"Valor único: {vals[0]:.4f}")
+            out.append("Preço Final Escolhido: Valor único.")
             out.append(f"Valor escolhido: {float_to_preco_txt(vals[0], decimals=2)}")
             out.append("")
             continue
@@ -546,19 +583,19 @@ def build_memoria_calculo_txt(df: pd.DataFrame) -> str:
             cv = _coef_var(vals)
             mean = sum(vals) / len(vals)
             med = float(pd.Series(vals).median())
-            out.append("Valores (iniciais parseados):")
+            out.append("Valores Iniciais considerados no cálculo:")
             out.append(", ".join([f"{v:.4f}" for v in vals]))
             out.append("")
-            out.append(f"Media: {mean:.4f}")
+            out.append(f"Média: {mean:.4f}")
             out.append(f"Mediana: {med:.4f}")
-            out.append(f"CV: {'' if cv is None else f'{cv:.6f}'}")
+            out.append(f"CV: {_cv_pct_txt(cv)}")
 
             if cv is None:
                 escolhido = "Mediana"
                 valor = med
-                motivo = "CV indefinido (media=0)"
+                motivo = "CV indefinido (média=0)"
             elif cv < 0.25:
-                escolhido = "Media"
+                escolhido = "Média"
                 valor = mean
                 motivo = "CV < 0,25"
             else:
@@ -566,46 +603,49 @@ def build_memoria_calculo_txt(df: pd.DataFrame) -> str:
                 valor = med
                 motivo = "CV >= 0,25"
 
-            out.append(f"Decisao: {escolhido} ({motivo})")
-            out.append(f"Valor escolhido (2 casas): {float_to_preco_txt(valor, decimals=2)}")
+            out.append(f"Decisão: {escolhido} ({motivo})")
+            out.append(f"Valor Final: {float_to_preco_txt(valor, decimals=2)}")
             out.append("")
             continue
 
         # N >= 5 -> filtro e media
         rep = _audit_item(vals, upper=1.25, lower=0.75)
 
-        out.append("Valores (iniciais parseados):")
+        out.append("Valores Iniciais considerados no cálculo:")
         out.append(", ".join([f"{v:.4f}" for v in rep["iniciais"]]))
         out.append("")
 
-        out.append("--- Exclusoes: Excessivamente Elevados (v / media_outros > 1,25) ---")
-        out.append(f"Qtde: {len(rep['excluidos_altos'])}")
+        out.append("--- Preços exclúidos por serem Excessivamente Elevados ---")
+        out.append(f"Quantidade: {len(rep['excluidos_altos'])}")
         for r in rep["excluidos_altos"]:
-            out.append(f"v={r['v']:.4f} | media_outros={r['m_outros']:.4f} | ratio={r['ratio']:.4f}")
+            out.append(
+                f"Valor={r['v']:.4f} | Média dos demais={r['m_outros']:.4f} | Proporção={r['ratio']:.4f}"
+            )
         out.append("")
 
-        out.append("Apos ALTO (mantidos):")
+        out.append("Mantidos após exclusão dos Excessivamente Elevados:")
         out.append(", ".join([f"{v:.4f}" for v in rep["apos_alto"]]))
         out.append("")
 
-        out.append("--- Exclusoes: Inexequiveis (v / media_outros < 0,75) ---")
-        out.append(f"Qtde: {len(rep['excluidos_baixos'])}")
+        out.append("--- Preços exclúidos por serem Inexequíveis ---")
+        out.append(f"Quantidade: {len(rep['excluidos_baixos'])}")
         for r in rep["excluidos_baixos"]:
-            out.append(f"v={r['v']:.4f} | media_outros={r['m_outros']:.4f} | ratio={r['ratio']:.4f}")
+            out.append(
+                f"Valor={r['v']:.4f} | Média dos demais={r['m_outros']:.4f} | Proporção={r['ratio']:.4f}"
+            )
         out.append("")
 
-        out.append("Finais:")
+        out.append("Valores considerados no cálculo final:")
         out.append(", ".join([f"{v:.4f}" for v in rep["finais"]]))
-        out.append(f"N final: {len(rep['finais'])}")
+        out.append(f"Número de valores considerados no cálculo final: {len(rep['finais'])}")
         media_txt = "" if rep["media_final"] is None else f"{rep['media_final']:.4f}"
-        out.append(f"Media final: {media_txt}")
-        cv_txt = "" if rep["cv_final"] is None else f"{rep['cv_final']:.6f}"
-        out.append(f"CV final: {cv_txt}")
+        out.append(f"Média final: {media_txt}")
+        out.append(f"Coeficiente de Variação final: {_cv_pct_txt(rep['cv_final'])}")
 
         valor2 = rep["media_final"]
-        out.append("Preco Final escolhido: Media")
+        out.append("Decisão Final: Média")
         val_txt = float_to_preco_txt(valor2, decimals=2) if valor2 is not None else ""
-        out.append(f"Valor escolhido (2 casas): {val_txt}")
+        out.append(f"Valor Final: {val_txt}")
         out.append("")
 
     return "\n".join(out) + "\n"
@@ -613,7 +653,13 @@ def build_memoria_calculo_txt(df: pd.DataFrame) -> str:
 
 
 def _text_to_pdf_bytes(text: str) -> bytes:
-    """Renderiza um TXT monoespacado em PDF com quebra de pagina."""
+    """Renderiza o TXT (com marcadores simples) em PDF com quebra de pagina.
+
+    Marcadores aceitos:
+      - <<TITLE>>...<<ENDTITLE>>      : titulo (fonte maior, negrito)
+      - <<B>>...<<ENDB>>              : negrito
+      - <<LINK|URL>>...<<ENDLINK>>    : hyperlink
+    """
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
 
@@ -625,8 +671,13 @@ def _text_to_pdf_bytes(text: str) -> bytes:
     usable_width = width - left - right
 
     font_name = "Courier"
+    bold_font_name = "Courier-Bold"
     font_size = 9
     line_height = 11
+
+    title_font_size = 12
+    title_line_height = 16
+
     c.setFont(font_name, font_size)
 
     y = height - top
@@ -636,24 +687,75 @@ def _text_to_pdf_bytes(text: str) -> bytes:
     avg_char_w = c.stringWidth("M", font_name, font_size)
     max_chars = max(20, int(usable_width // avg_char_w))
 
-    def draw_line(s: str):
+    def _page_break_if_needed(curr_font_name: str, curr_font_size: int):
         nonlocal y
         if y <= bottom:
             c.showPage()
-            c.setFont(font_name, font_size)
+            c.setFont(curr_font_name, curr_font_size)
             y = height - top
+
+    def _draw_chunk(s: str, curr_font_name: str, curr_font_size: int, curr_line_height: int, link_url: str | None = None):
+        nonlocal y
+        _page_break_if_needed(curr_font_name, curr_font_size)
+        c.setFont(curr_font_name, curr_font_size)
         c.drawString(left, y, s)
-        y -= line_height
+
+        if link_url:
+            w = c.stringWidth(s, curr_font_name, curr_font_size)
+            # retangulo de clique (baseline -> caixa aproximada)
+            y0 = y - 2
+            y1 = y + curr_font_size + 2
+            c.linkURL(link_url, (left, y0, left + w, y1), relative=0)
+
+        y -= curr_line_height
+
+    def _strip_marker(line: str):
+        # retorna (tipo, payload, url)
+        if line.startswith("<<TITLE>>") and line.endswith("<<ENDTITLE>>"):
+            return ("TITLE", line[len("<<TITLE>>") : -len("<<ENDTITLE>>")], None)
+        if line.startswith("<<B>>") and line.endswith("<<ENDB>>"):
+            return ("B", line[len("<<B>>") : -len("<<ENDB>>")], None)
+        if line.startswith("<<LINK|") and line.endswith("<<ENDLINK>>"):
+            # <<LINK|URL>>texto<<ENDLINK>>
+            mid = line.find(">>")
+            url = line[len("<<LINK|") : mid]
+            payload = line[mid + 2 : -len("<<ENDLINK>>")]
+            return ("LINK", payload, url)
+        return ("N", line, None)
 
     for raw_line in (text or "").splitlines():
-        line = raw_line.rstrip("\n")
-        if len(line) <= max_chars:
-            draw_line(line)
+        raw = raw_line.rstrip("\n")
+        kind, payload, url = _strip_marker(raw)
+
+        if kind == "TITLE":
+            curr_font = bold_font_name
+            curr_size = title_font_size
+            curr_lh = title_line_height
+            link = None
+        elif kind == "B":
+            curr_font = bold_font_name
+            curr_size = font_size
+            curr_lh = line_height
+            link = None
+        elif kind == "LINK":
+            curr_font = font_name
+            curr_size = font_size
+            curr_lh = line_height
+            link = url
         else:
-            # quebra simples por caracteres
+            curr_font = font_name
+            curr_size = font_size
+            curr_lh = line_height
+            link = None
+
+        line = payload
+        if len(line) <= max_chars:
+            _draw_chunk(line, curr_font, curr_size, curr_lh, link_url=link)
+        else:
             start = 0
             while start < len(line):
-                draw_line(line[start : start + max_chars])
+                chunk = line[start : start + max_chars]
+                _draw_chunk(chunk, curr_font, curr_size, curr_lh, link_url=link)
                 start += max_chars
 
     c.save()
