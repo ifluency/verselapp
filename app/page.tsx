@@ -48,7 +48,7 @@ export default function Page() {
       />
 
       <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-        <button onClick={() => sendTo("/api/parse", "relatorio.xlsx")}>
+        <button onClick={() => sendTo("/api/parse", "relatorio.zip")}>
           Processar (Excel)
         </button>
 
