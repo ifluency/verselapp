@@ -45,8 +45,15 @@ class handler(BaseHTTPRequestHandler):
 
             itens = build_itens_relatorio(df, payload=None)
 
+            # Resposta enxuta para o front (prévia)
             out_items = []
             for it in itens:
+                valores = it.get("valores_brutos") or []
+                fontes = it.get("fontes_brutos") or []
+                pares = []
+                for i, v in enumerate(valores):
+                    fonte = fontes[i] if i < len(fontes) else ""
+                    pares.append({"idx": i, "valor": v, "fonte": fonte})
                 out_items.append(
                     {
                         "item": str(it.get("item")),
@@ -56,7 +63,7 @@ class handler(BaseHTTPRequestHandler):
                         "excl_altos": int(it.get("excl_altos") or 0),
                         "excl_baixos": int(it.get("excl_baixos") or 0),
                         "valor_calculado": it.get("valor_auto"),
-                        "valores_brutos": it.get("valores_brutos") or [],
+                        "valores_brutos": pares,
                     }
                 )
 
