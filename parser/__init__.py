@@ -1,5 +1,6 @@
 from .parser import (
     process_pdf_bytes,
-    build_memoria_calculo_text,
-    build_debug_audit_text,
+    process_pdf_bytes_debug,
+    debug_dump,
+    validate_extraction,
 )
