@@ -39,7 +39,10 @@ export default function Page() {
   return (
     <main style={{ maxWidth: 720, margin: "40px auto", padding: "0 16px" }}>
       <h1>Extrator Compras.gov.br</h1>
-      <p>Envie um PDF e gere o Excel (Compõe=Sim). Use o Debug para auditar cálculos.</p>
+      <p>
+        Envie um PDF e gere um .zip com Excel + PDF (Memória de Cálculo). Use o
+        Debug para auditar cálculos.
+      </p>
 
       <input
         type="file"
@@ -48,8 +51,8 @@ export default function Page() {
       />
 
       <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-        <button onClick={() => sendTo("/api/parse", "relatorio.xlsx")}>
-          Processar (Excel)
+        <button onClick={() => sendTo("/api/parse", "resultado.zip")}>
+          Processar (ZIP)
         </button>
 
         <button onClick={() => sendTo("/api/debug", "debug_audit.txt")}>
