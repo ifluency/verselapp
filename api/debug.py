@@ -146,8 +146,10 @@ def build_audit_txt(df, max_items=5, min_n=5):
         out.append("Finais:")
         out.append(", ".join([f"{v:.4f}" for v in rep["finais"]]))
         out.append(f"N final: {len(rep['finais'])}")
-        out.append(f"Média final: {'' if rep['media_final'] is None else f'{rep['media_final']:.4f}'}")
-        out.append(f"CV final: {'' if rep['cv_final'] is None else f'{rep['cv_final']:.6f}'}")
+        media_txt = "" if rep["media_final"] is None else f"{rep['media_final']:.4f}"
+        out.append(f"Média final: {media_txt}")
+        cv_txt = "" if rep["cv_final"] is None else f"{rep['cv_final']:.6f}"
+        out.append(f"CV final: {cv_txt}")
         out.append("")
 
         count += 1
