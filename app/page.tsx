@@ -10,7 +10,7 @@ type PreviewItem = {
   excl_altos: number;
   excl_baixos: number;
   valor_calculado: number | null;
-  valores_brutos: number[];
+  valores_brutos: { idx: number; valor: number; fonte: string }[];
 };
 
 type ManualOverride = {
@@ -35,6 +35,12 @@ function fmtBRL(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "";
   // Formato simples PT-BR: 1234.56 -> 1234,56 (sem milhares para manter consistente)
   return n.toFixed(2).replace(".", ",");
+}
+
+function fmtSmart(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "";
+  const dec = Math.abs(n) >= 1 ? 2 : 4;
+  return n.toFixed(dec).replace(".", ",");
 }
 
 function mean(vals: number[]): number | null {
@@ -63,6 +69,13 @@ function pct2(x: number | null): string {
   return (x * 100).toFixed(2).replace(".", ",") + "%";
 }
 
+const JUST_OPTIONS: Record<string, string> = {
+  OUTLIERS_MANUAL: "Exclusão manual de valores destoantes (outliers) a partir da análise dos valores brutos.",
+  FONTE_PRIORIZADA: "Priorização de fontes mais confiáveis (ex.: compras anteriores/homologações) frente a cotações menos consistentes.",
+  MERCADO_OSCILACAO: "Oscilação de mercado identificada; adotado critério mais aderente ao contexto recente de aquisição.",
+  OUTRO: "",
+};
+
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>("");
@@ -86,15 +99,32 @@ export default function Page() {
   const [modalJustCode, setModalJustCode] = useState<string>("");
   const [modalJustText, setModalJustText] = useState<string>("");
 
+  const modalIdxToVal = useMemo(() => {
+    const m = new Map<number, number>();
+    if (modalItem) {
+      for (const e of modalItem.valores_brutos) {
+        if (typeof e.idx === "number" && typeof e.valor === "number") {
+          m.set(e.idx, e.valor);
+        }
+      }
+    }
+    return m;
+  }, [modalItem]);
+
+  const modalSortedEntries = useMemo(() => {
+    if (!modalItem) return [] as { idx: number; valor: number; fonte: string }[];
+    return [...modalItem.valores_brutos].sort((a, b) => a.valor - b.valor);
+  }, [modalItem]);
+
   const modalIncludedValues = useMemo(() => {
     if (!modalItem) return [];
     const vals: number[] = [];
     for (const idx of modalSelected) {
-      const v = modalItem.valores_brutos[idx];
+      const v = modalIdxToVal.get(idx);
       if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
     }
     return vals;
-  }, [modalItem, modalSelected]);
+  }, [modalItem, modalSelected, modalIdxToVal]);
 
   const modalStats = useMemo(() => {
     const m = mean(modalIncludedValues);
@@ -114,20 +144,20 @@ export default function Page() {
   }
 
   function openManualModal(item: PreviewItem) {
-    // Só abre se permitido
+    // Só abre se elegível OU se já foi ajustado (para permitir reabrir/editar)
+    const existing = overrides[item.item];
     const last = parseBRL(lastQuotes[item.item] || "");
     const calc = item.valor_calculado;
-    const allowed = last !== null && calc !== null && calc < last;
-    if (!allowed) return;
+    const eligible = last !== null && last > 0 && calc !== null && calc <= 1.2 * last;
+    if (!eligible && !existing) return;
 
     setModalItemId(item.item);
 
     // Inicializa com tudo selecionado
-    const allIdx = item.valores_brutos.map((_, i) => i);
+    const allIdx = item.valores_brutos.map((e) => e.idx);
     setModalSelected(allIdx);
 
     // Se já existe override, carrega
-    const existing = overrides[item.item];
     if (existing) {
       setModalSelected(existing.includedIndices);
       setModalMethod(existing.method);
@@ -135,7 +165,7 @@ export default function Page() {
       setModalJustText(existing.justificativaTexto);
     } else {
       // Sugere método pelo CV (mas o usuário escolhe)
-      const baseCv = cv(item.valores_brutos);
+      const baseCv = cv(item.valores_brutos.map((e) => e.valor));
       const suggested = baseCv === null ? "mediana" : baseCv < 0.25 ? "media" : "mediana";
       setModalMethod(suggested);
       setModalJustCode("");
@@ -156,13 +186,16 @@ export default function Page() {
       setStatus("Selecione ao menos 1 valor para o cálculo manual.");
       return;
     }
+    const finalJustText =
+      modalJustCode && modalJustCode !== "OUTRO" ? JUST_OPTIONS[modalJustCode] || "" : modalJustText;
+
     setOverrides((prev) => ({
       ...prev,
       [modalItem.item]: {
         includedIndices: [...modalSelected].sort((a, b) => a - b),
         method: modalMethod,
         justificativaCodigo: modalJustCode,
-        justificativaTexto: modalJustText,
+        justificativaTexto: finalJustText,
       },
     }));
     closeModal();
@@ -227,7 +260,7 @@ export default function Page() {
     }
 
     const manual_overrides: any = {};
-    for (const [itemId, ov] of Object.entries(overrides)) {
+    for (const [itemId, ov] of Object.entries(overrides as Record<string, ManualOverride>)) {
       manual_overrides[itemId] = {
         included_indices: ov.includedIndices,
         method: ov.method,
@@ -274,40 +307,37 @@ export default function Page() {
     return preview.map((it) => {
       const last = parseBRL(lastQuotes[it.item] || "");
       const calc = it.valor_calculado;
-      const allowManual = last !== null && calc !== null && calc < last;
       const ov = overrides[it.item];
+
+      const eligible = last !== null && last > 0 && calc !== null && calc <= 1.2 * last;
+      const allowManual = eligible || !!ov;
 
       let modo = "Auto";
       let metodo = "";
       let valorFinal: number | null = calc;
 
-      if (allowManual && ov) {
+      if (ov) {
         modo = "Manual";
         metodo = ov.method === "media" ? "Média" : "Mediana";
+        const idxToVal = new Map<number, number>();
+        for (const e of it.valores_brutos) idxToVal.set(e.idx, e.valor);
         const included = ov.includedIndices
-          .map((idx) => it.valores_brutos[idx])
+          .map((idx) => idxToVal.get(idx))
           .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
         valorFinal = ov.method === "media" ? mean(included) : median(included);
-      } else if (allowManual && !ov) {
-        modo = "Pendente";
       }
 
-      const diffAbs =
-        last !== null && valorFinal !== null ? valorFinal - last : null;
-      const diffPct =
-        last !== null && last !== 0 && valorFinal !== null
-          ? (diffAbs! / last) * 100
-          : null;
+      const diffAbs = last !== null && valorFinal !== null ? valorFinal - last : null;
 
       return {
         ...it,
         last,
+        eligible,
         allowManual,
         modo,
         metodo,
         valorFinal,
         diffAbs,
-        diffPct,
         hasOverride: !!ov,
       };
     });
@@ -318,7 +348,7 @@ export default function Page() {
       <h1>UPDE — Preços de Referência (Prévia + Ajuste Manual)</h1>
       <p>
         1) Faça upload do PDF do ComprasGOV → 2) Veja a prévia → 3) Informe o último licitado → 4)
-        Ajuste manual (somente quando <strong>Valor calculado &lt; Último licitado</strong>) → 5)
+        Ajuste manual (liberado quando <strong>Valor calculado ≤ 1,2× Último licitado</strong>) → 5)
         Gere o ZIP.
       </p>
 
@@ -431,8 +461,11 @@ export default function Page() {
               </tr>
             </thead>
             <tbody>
-              {tableRows.map((r) => (
-                <tr key={r.item}>
+              {tableRows.map((r, rowIdx) => (
+                <tr
+                  key={r.item}
+                  style={{ background: rowIdx % 2 === 0 ? "#ffffff" : "#f4f4f4" }}
+                >
                   <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.item}</td>
                   <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.catmat}</td>
                   <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.n_bruto}</td>
@@ -466,20 +499,32 @@ export default function Page() {
                         disabled={!r.allowManual}
                         title={
                           r.allowManual
-                            ? "Ajustar manualmente"
-                            : "Só disponível quando Valor calculado < Último licitado"
+                            ? r.hasOverride
+                              ? "Ajuste manual já salvo (clique para revisar)"
+                              : "Ajustar manualmente"
+                            : "Só disponível quando Valor calculado ≤ 1,2× Último licitado"
                         }
                         style={
                           r.allowManual
-                            ? {
-                                background: "#d32f2f",
-                                color: "white",
-                                border: "1px solid #b71c1c",
-                                fontWeight: 700,
-                                padding: "4px 10px",
-                                borderRadius: 6,
-                                cursor: "pointer",
-                              }
+                            ? r.hasOverride
+                              ? {
+                                  background: "#2e7d32",
+                                  color: "white",
+                                  border: "1px solid #1b5e20",
+                                  fontWeight: 700,
+                                  padding: "4px 10px",
+                                  borderRadius: 6,
+                                  cursor: "pointer",
+                                }
+                              : {
+                                  background: "#f1c232",
+                                  color: "#000",
+                                  border: "1px solid #c9a100",
+                                  fontWeight: 700,
+                                  padding: "4px 10px",
+                                  borderRadius: 6,
+                                  cursor: "pointer",
+                                }
                             : {
                                 padding: "4px 10px",
                                 borderRadius: 6,
@@ -546,25 +591,27 @@ export default function Page() {
               <div style={{ flex: 1, minWidth: 320 }}>
                 <h3 style={{ margin: "10px 0" }}>Valores brutos</h3>
                 <div style={{ border: "1px solid #eee", borderRadius: 6 }}>
-                  {modalItem.valores_brutos.map((v, idx) => (
+                  {modalSortedEntries.map((e, rowIdx) => (
                     <label
-                      key={idx}
+                      key={e.idx}
                       style={{
                         display: "flex",
                         gap: 10,
                         alignItems: "center",
                         padding: "8px 10px",
-                        borderBottom: idx === modalItem.valores_brutos.length - 1 ? "none" : "1px solid #eee",
+                        borderBottom:
+                          rowIdx === modalSortedEntries.length - 1 ? "none" : "1px solid #eee",
                         cursor: "pointer",
                       }}
                     >
                       <input
                         type="checkbox"
-                        checked={modalSelected.includes(idx)}
-                        onChange={() => toggleModalIndex(idx)}
+                        checked={modalSelected.includes(e.idx)}
+                        onChange={() => toggleModalIndex(e.idx)}
                       />
-                      <span style={{ width: 56, opacity: 0.7 }}>[{idx}]</span>
-                      <span style={{ fontFamily: "monospace" }}>{v.toFixed(4)}</span>
+                      <span style={{ width: 60, opacity: 0.7 }}>[{e.idx + 1}]</span>
+                      <span style={{ width: 110, fontFamily: "monospace" }}>{fmtSmart(e.valor)}</span>
+                      <span style={{ flex: 1, opacity: 0.85 }}>Fonte: {e.fonte || "-"}</span>
                     </label>
                   ))}
                 </div>
@@ -584,11 +631,11 @@ export default function Page() {
                   </div>
                   <div>
                     <div style={{ fontWeight: 700 }}>Média</div>
-                    <div style={{ fontFamily: "monospace" }}>{modalStats.mean === null ? "" : modalStats.mean.toFixed(4)}</div>
+                    <div style={{ fontFamily: "monospace" }}>{fmtSmart(modalStats.mean)}</div>
                   </div>
                   <div>
                     <div style={{ fontWeight: 700 }}>Mediana</div>
-                    <div style={{ fontFamily: "monospace" }}>{modalStats.median === null ? "" : modalStats.median.toFixed(4)}</div>
+                    <div style={{ fontFamily: "monospace" }}>{fmtSmart(modalStats.median)}</div>
                   </div>
                   <div>
                     <div style={{ fontWeight: 700 }}>CV</div>
@@ -626,7 +673,7 @@ export default function Page() {
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontWeight: 700 }}>Valor final (manual)</div>
                   <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
-                    {fmtBRL(modalStats.finalVal)}
+                    {fmtSmart(modalStats.finalVal)}
                   </div>
                 </div>
 
@@ -634,19 +681,30 @@ export default function Page() {
                   <div style={{ fontWeight: 700 }}>Justificativa</div>
                   <select
                     value={modalJustCode}
-                    onChange={(e) => setModalJustCode(e.target.value)}
+                    onChange={(e) => {
+                      const code = e.target.value;
+                      setModalJustCode(code);
+                      if (!code) {
+                        setModalJustText("");
+                      } else if (code === "OUTRO") {
+                        setModalJustText("");
+                      } else {
+                        setModalJustText(JUST_OPTIONS[code] || "");
+                      }
+                    }}
                     style={{ marginTop: 6, width: "100%" }}
                   >
                     <option value="">(opcional) Selecione um motivo</option>
                     <option value="OUTLIERS_MANUAL">Exclusão manual de valores destoantes</option>
-                    <option value="DADOS_INCONSISTENTES">Inconsistência/indícios de erro nos dados</option>
-                    <option value="HISTORICO_INSTITUICAO">Adequação ao histórico da instituição</option>
+                    <option value="FONTE_PRIORIZADA">Priorização de fontes mais confiáveis</option>
+                    <option value="MERCADO_OSCILACAO">Oscilação de mercado</option>
                     <option value="OUTRO">Outro</option>
                   </select>
                   <textarea
                     value={modalJustText}
                     onChange={(e) => setModalJustText(e.target.value)}
                     placeholder="(opcional) Descreva a justificativa"
+                    disabled={!!modalJustCode && modalJustCode !== "OUTRO"}
                     style={{ marginTop: 8, width: "100%", minHeight: 90 }}
                   />
                 </div>
