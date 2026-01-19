@@ -612,9 +612,14 @@ def build_excel_bytes(df: pd.DataFrame, itens_relatorio: list[dict]) -> bytes:
 
     df_preview = pd.DataFrame(preview_rows)
 
+    # IMPORTANTE:
+    # Não use `df or ...` com DataFrame, pois o pandas não permite avaliar DataFrame
+    # como booleano ("truth value is ambiguous"). Isso quebrava o /api/generate.
+    df_to_write = df if df is not None else pd.DataFrame()
+
     excel_out = io.BytesIO()
     with pd.ExcelWriter(excel_out, engine="openpyxl") as writer:
-        (df or pd.DataFrame()).to_excel(writer, index=False, sheet_name="Dados")
+        df_to_write.to_excel(writer, index=False, sheet_name="Dados")
         df_resumo.to_excel(writer, index=False, sheet_name="Resumo")
         df_preview.to_excel(writer, index=False, sheet_name="Prévia")
 
