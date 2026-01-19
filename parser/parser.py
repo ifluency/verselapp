@@ -3,6 +3,9 @@ import io
 import pdfplumber
 import pandas as pd
 
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+
 RE_ITEM = re.compile(r"^Item:\s*(\d+)\b", re.IGNORECASE)
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
 
@@ -423,3 +426,242 @@ def debug_dump(df: pd.DataFrame, debug_records: list[dict], max_rows: int = 200)
     out.append(f"Total linhas no DF final (Compõe=Sim): {len(df) if df is not None else 0}")
     out.append("=" * 120)
     return "\n".join(out)
+
+
+
+
+# ===============================
+# Memoria de Calculo (PDF)
+# ===============================
+
+def _preco_txt_to_float_for_memoria(preco_txt: str):
+    if preco_txt is None:
+        return None
+    s = str(preco_txt).strip().replace("R$", "").strip()
+    if not s:
+        return None
+    # PT-BR: 9.309,0000 -> 9309.0000
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _coef_var(vals):
+    if not vals:
+        return None
+    mean = sum(vals) / len(vals)
+    if mean == 0:
+        return None
+    var = sum((v - mean) ** 2 for v in vals) / len(vals)
+    std = var ** 0.5
+    return std / mean
+
+
+def _audit_item(vals, upper=1.25, lower=0.75):
+    """Replica o padrao do /api/debug para um unico item."""
+    altos = []
+    keep_alto = []
+    for i, v in enumerate(vals):
+        m = media_sem_o_valor(vals, i)
+        ratio = (v / m) if (m not in (None, 0)) else None
+        if ratio is not None and ratio > upper:
+            altos.append({"v": v, "m_outros": m, "ratio": ratio})
+        else:
+            keep_alto.append(v)
+
+    baixos = []
+    keep_baixo = []
+    for i, v in enumerate(keep_alto):
+        m = media_sem_o_valor(keep_alto, i)
+        ratio = (v / m) if (m not in (None, 0)) else None
+        if ratio is not None and ratio < lower:
+            baixos.append({"v": v, "m_outros": m, "ratio": ratio})
+        else:
+            keep_baixo.append(v)
+
+    final = keep_baixo[:]
+    return {
+        "iniciais": vals,
+        "excluidos_altos": altos,
+        "apos_alto": keep_alto,
+        "excluidos_baixos": baixos,
+        "finais": final,
+        "media_final": (sum(final) / len(final)) if final else None,
+        "cv_final": _coef_var(final) if final else None,
+    }
+
+
+def build_memoria_calculo_txt(df: pd.DataFrame) -> str:
+    """Gera um relatorio TXT (monoespacado) com o passo a passo dos calculos para TODOS os itens."""
+    if df is None or getattr(df, "empty", True):
+        return "DF vazio. Nenhuma linha encontrada.\n"
+
+
+    required = {"Item", "Preço unitário"}
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        return f"Colunas esperadas ausentes: {missing}. Colunas encontradas: {list(df.columns)}\n"
+
+    out = []
+    out.append("MEMORIA DE CALCULO — AUDITORIA DOS PRECOS")
+    out.append("Regras aplicadas:")
+    out.append(" - Se N < 5: CV decide media/mediana (CV < 0,25 -> media; senao -> mediana)")
+    out.append(" - Se N >= 5: filtro por ratio e media")
+    out.append("    - Excessivamente Elevados: v / media_outros > 1,25")
+    out.append("    - Inexequiveis: v / media_outros < 0,75 (apos remover elevados)")
+    out.append("")
+
+    for item, g_raw in df.groupby("Item", sort=False):
+        out.append("=" * 110)
+        out.append(str(item))
+
+        g = g_raw.copy()
+        g["preco_num"] = g["Preço unitário"].apply(_preco_txt_to_float_for_memoria)
+        vals = g["preco_num"].dropna().astype(float).tolist()
+
+        n_bruto = len(g_raw)
+        n_parse = len(vals)
+        out.append(f"N bruto (linhas): {n_bruto} | N precos parseados: {n_parse}")
+
+        if n_parse == 0:
+            out.append("⚠️ Nenhum preco conseguiu ser convertido para numero.")
+            out.append("Valores originais da coluna 'Preço unitário' (primeiros 50):")
+            out.append(", ".join([str(x) for x in g_raw["Preço unitário"].tolist()[:50]]))
+            out.append("")
+            continue
+
+        # Caso com poucos valores
+        if n_parse == 1:
+            out.append("⚠️ Apenas 1 preco numerico. Nao e possivel aplicar CV nem filtros.")
+            out.append(f"Valor unico: {vals[0]:.4f}")
+            out.append("Preco Final escolhido: valor unico")
+            out.append(f"Valor escolhido: {float_to_preco_txt(vals[0], decimals=2)}")
+            out.append("")
+            continue
+
+        # N < 5 -> CV decide
+        if n_parse < 5:
+            cv = _coef_var(vals)
+            mean = sum(vals) / len(vals)
+            med = float(pd.Series(vals).median())
+            out.append("Valores (iniciais parseados):")
+            out.append(", ".join([f"{v:.4f}" for v in vals]))
+            out.append("")
+            out.append(f"Media: {mean:.4f}")
+            out.append(f"Mediana: {med:.4f}")
+            out.append(f"CV: {'' if cv is None else f'{cv:.6f}'}")
+
+            if cv is None:
+                escolhido = "Mediana"
+                valor = med
+                motivo = "CV indefinido (media=0)"
+            elif cv < 0.25:
+                escolhido = "Media"
+                valor = mean
+                motivo = "CV < 0,25"
+            else:
+                escolhido = "Mediana"
+                valor = med
+                motivo = "CV >= 0,25"
+
+            out.append(f"Decisao: {escolhido} ({motivo})")
+            out.append(f"Valor escolhido (2 casas): {float_to_preco_txt(valor, decimals=2)}")
+            out.append("")
+            continue
+
+        # N >= 5 -> filtro e media
+        rep = _audit_item(vals, upper=1.25, lower=0.75)
+
+        out.append("Valores (iniciais parseados):")
+        out.append(", ".join([f"{v:.4f}" for v in rep["iniciais"]]))
+        out.append("")
+
+        out.append("--- Exclusoes: Excessivamente Elevados (v / media_outros > 1,25) ---")
+        out.append(f"Qtde: {len(rep['excluidos_altos'])}")
+        for r in rep["excluidos_altos"]:
+            out.append(f"v={r['v']:.4f} | media_outros={r['m_outros']:.4f} | ratio={r['ratio']:.4f}")
+        out.append("")
+
+        out.append("Apos ALTO (mantidos):")
+        out.append(", ".join([f"{v:.4f}" for v in rep["apos_alto"]]))
+        out.append("")
+
+        out.append("--- Exclusoes: Inexequiveis (v / media_outros < 0,75) ---")
+        out.append(f"Qtde: {len(rep['excluidos_baixos'])}")
+        for r in rep["excluidos_baixos"]:
+            out.append(f"v={r['v']:.4f} | media_outros={r['m_outros']:.4f} | ratio={r['ratio']:.4f}")
+        out.append("")
+
+        out.append("Finais:")
+        out.append(", ".join([f"{v:.4f}" for v in rep["finais"]]))
+        out.append(f"N final: {len(rep['finais'])}")
+        media_txt = "" if rep["media_final"] is None else f"{rep['media_final']:.4f}"
+        out.append(f"Media final: {media_txt}")
+        cv_txt = "" if rep["cv_final"] is None else f"{rep['cv_final']:.6f}"
+        out.append(f"CV final: {cv_txt}")
+
+        valor2 = rep["media_final"]
+        out.append("Preco Final escolhido: Media")
+        val_txt = float_to_preco_txt(valor2, decimals=2) if valor2 is not None else ""
+        out.append(f"Valor escolhido (2 casas): {val_txt}")
+        out.append("")
+
+    return "\n".join(out) + "\n"
+
+
+
+def _text_to_pdf_bytes(text: str) -> bytes:
+    """Renderiza um TXT monoespacado em PDF com quebra de pagina."""
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+
+    width, height = A4
+    left = 36
+    right = 36
+    top = 36
+    bottom = 36
+    usable_width = width - left - right
+
+    font_name = "Courier"
+    font_size = 9
+    line_height = 11
+    c.setFont(font_name, font_size)
+
+    y = height - top
+
+    # Heuristica de quebra de linha por largura
+    # Courier ~ monoespacado: estimativa de caracteres por linha
+    avg_char_w = c.stringWidth("M", font_name, font_size)
+    max_chars = max(20, int(usable_width // avg_char_w))
+
+    def draw_line(s: str):
+        nonlocal y
+        if y <= bottom:
+            c.showPage()
+            c.setFont(font_name, font_size)
+            y = height - top
+        c.drawString(left, y, s)
+        y -= line_height
+
+    for raw_line in (text or "").splitlines():
+        line = raw_line.rstrip("\n")
+        if len(line) <= max_chars:
+            draw_line(line)
+        else:
+            # quebra simples por caracteres
+            start = 0
+            while start < len(line):
+                draw_line(line[start : start + max_chars])
+                start += max_chars
+
+    c.save()
+    buffer.seek(0)
+    return buffer.read()
+
+
+def build_memoria_calculo_pdf_bytes(df: pd.DataFrame) -> bytes:
+    """Gera o PDF 'Memoria de Calculo' (bytes) a partir do dataframe final (Compõe=Sim)."""
+    txt = build_memoria_calculo_txt(df)
+    return _text_to_pdf_bytes(txt)
