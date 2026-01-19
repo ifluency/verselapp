@@ -33,6 +33,7 @@ function parseBRL(input: string): number | null {
 
 function fmtBRL(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "";
+  // Formato simples PT-BR: 1234.56 -> 1234,56 (sem milhares para manter consistente)
   return n.toFixed(2).replace(".", ",");
 }
 
@@ -73,6 +74,7 @@ export default function Page() {
   const [lastQuotes, setLastQuotes] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, ManualOverride>>({});
 
+  // Modal state
   const [modalItemId, setModalItemId] = useState<string | null>(null);
   const modalItem = useMemo(
     () => preview.find((p) => p.item === modalItemId) || null,
@@ -112,6 +114,7 @@ export default function Page() {
   }
 
   function openManualModal(item: PreviewItem) {
+    // Só abre se permitido
     const last = parseBRL(lastQuotes[item.item] || "");
     const calc = item.valor_calculado;
     const allowed = last !== null && calc !== null && calc < last;
@@ -119,9 +122,11 @@ export default function Page() {
 
     setModalItemId(item.item);
 
+    // Inicializa com tudo selecionado
     const allIdx = item.valores_brutos.map((_, i) => i);
     setModalSelected(allIdx);
 
+    // Se já existe override, carrega
     const existing = overrides[item.item];
     if (existing) {
       setModalSelected(existing.includedIndices);
@@ -129,6 +134,7 @@ export default function Page() {
       setModalJustCode(existing.justificativaCodigo);
       setModalJustText(existing.justificativaTexto);
     } else {
+      // Sugere método pelo CV (mas o usuário escolhe)
       const baseCv = cv(item.valores_brutos);
       const suggested = baseCv === null ? "mediana" : baseCv < 0.25 ? "media" : "mediana";
       setModalMethod(suggested);
@@ -213,6 +219,7 @@ export default function Page() {
     setStatus("Gerando arquivos finais...");
     setLoadingGenerate(true);
 
+    // Payload para o backend
     const last_quotes: Record<string, number> = {};
     for (const it of preview) {
       const v = parseBRL(lastQuotes[it.item] || "");
@@ -285,8 +292,12 @@ export default function Page() {
         modo = "Pendente";
       }
 
-      const diffAbs = last !== null && valorFinal !== null ? valorFinal - last : null;
-      const diffPct = last !== null && last !== 0 && valorFinal !== null ? (diffAbs! / last) * 100 : null;
+      const diffAbs =
+        last !== null && valorFinal !== null ? valorFinal - last : null;
+      const diffPct =
+        last !== null && last !== 0 && valorFinal !== null
+          ? (diffAbs! / last) * 100
+          : null;
 
       return {
         ...it,
@@ -303,7 +314,7 @@ export default function Page() {
   }, [preview, lastQuotes, overrides]);
 
   return (
-    <main style={{ maxWidth: 1200, margin: "32px auto", padding: "0 16px" }}>
+    <main style={{ maxWidth: 1400, margin: "32px auto", padding: "0 16px" }}>
       <h1>UPDE — Preços de Referência (Prévia + Ajuste Manual)</h1>
       <p>
         1) Faça upload do PDF do ComprasGOV → 2) Veja a prévia → 3) Informe o último licitado → 4)
@@ -312,13 +323,21 @@ export default function Page() {
       </p>
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <input
+          type="file"
+          accept="application/pdf"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        />
 
         <button onClick={loadPreview} disabled={!file || loadingPreview}>
           {loadingPreview ? "Carregando..." : "Gerar prévia"}
         </button>
 
-        <button onClick={generateZip} disabled={!file || !preview.length || loadingGenerate} style={{ fontWeight: 700 }}>
+        <button
+          onClick={generateZip}
+          disabled={!file || !preview.length || loadingGenerate}
+          style={{ fontWeight: 700 }}
+        >
           {loadingGenerate ? "Gerando..." : "Gerar ZIP (Excel + PDFs)"}
         </button>
 
@@ -357,8 +376,29 @@ export default function Page() {
       {status && <p style={{ marginTop: 12 }}>{status}</p>}
 
       {preview.length > 0 && (
-        <div style={{ marginTop: 20, overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <div style={{ marginTop: 20, overflowX: "hidden" }}>
+          <table
+            style={{
+              borderCollapse: "collapse",
+              width: "100%",
+              tableLayout: "fixed",
+              fontSize: 12,
+            }}
+          >
+            <colgroup>
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "7%" }} />
+            </colgroup>
             <thead>
               <tr>
                 {[
@@ -373,17 +413,16 @@ export default function Page() {
                   "Modo",
                   "Valor final",
                   "Dif. (R$)",
-                  "Dif. (%)",
                   "Ajuste",
                 ].map((h) => (
                   <th
                     key={h}
                     style={{
                       border: "1px solid #ddd",
-                      padding: "8px 10px",
+                      padding: "6px 6px",
                       background: "#f7f7f7",
                       textAlign: "left",
-                      whiteSpace: "nowrap",
+                      whiteSpace: "normal",
                     }}
                   >
                     {h}
@@ -394,40 +433,50 @@ export default function Page() {
             <tbody>
               {tableRows.map((r) => (
                 <tr key={r.item}>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px" }}>{r.item}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px" }}>{r.catmat}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px" }}>{r.n_bruto}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px" }}>{r.n_final}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px" }}>{r.excl_altos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px" }}>{r.excl_baixos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px", whiteSpace: "nowrap" }}>{fmtBRL(r.valor_calculado)}</td>
-
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px", whiteSpace: "nowrap" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.item}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.catmat}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.n_bruto}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.n_final}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.excl_altos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.excl_baixos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                    {fmtBRL(r.valor_calculado)}
+                  </td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
                     <input
                       value={lastQuotes[r.item] || ""}
-                      onChange={(e) => setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))}
+                      onChange={(e) =>
+                        setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
+                      }
                       placeholder="ex: 1.234,56"
-                      style={{ width: 120 }}
+                      style={{ width: 90, fontSize: 12, padding: "2px 4px" }}
                     />
                   </td>
-
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px" }}>{r.modo}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px", whiteSpace: "nowrap" }}>{fmtBRL(r.valorFinal)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px", whiteSpace: "nowrap" }}>{fmtBRL(r.diffAbs)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px", whiteSpace: "nowrap" }}>
-                    {r.diffPct === null ? "" : r.diffPct.toFixed(2).replace(".", ",") + "%"}
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>{r.modo}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                    {fmtBRL(r.valorFinal)}
                   </td>
-
-                  <td style={{ border: "1px solid #ddd", padding: "8px 10px", whiteSpace: "nowrap" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
+                    {fmtBRL(r.diffAbs)}
+                  </td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px" }}>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button
                         onClick={() => openManualModal(r)}
                         disabled={!r.allowManual}
-                        title={r.allowManual ? "Ajustar manualmente" : "Só disponível quando Valor calculado < Último licitado"}
+                        title={
+                          r.allowManual
+                            ? "Ajustar manualmente"
+                            : "Só disponível quando Valor calculado < Último licitado"
+                        }
                       >
                         Ajustar
                       </button>
-                      {r.hasOverride && <button onClick={() => clearManualOverride(r.item)}>Limpar</button>}
+                      {r.hasOverride && (
+                        <button onClick={() => clearManualOverride(r.item)}>
+                          Limpar
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -437,6 +486,7 @@ export default function Page() {
         </div>
       )}
 
+      {/* Modal */}
       {modalItem && (
         <div
           style={{
@@ -467,7 +517,8 @@ export default function Page() {
               <div>
                 <h2 style={{ margin: 0 }}>Ajuste manual — {modalItem.item}</h2>
                 <p style={{ margin: "6px 0 0" }}>
-                  Selecione os valores que devem compor o cálculo. Os indicadores (média/mediana/CV) são recalculados em tempo real.
+                  Selecione os valores que devem compor o cálculo. Os indicadores (média/mediana/CV)
+                  são recalculados em tempo real.
                 </p>
               </div>
               <button onClick={closeModal}>Fechar</button>
@@ -489,7 +540,11 @@ export default function Page() {
                         cursor: "pointer",
                       }}
                     >
-                      <input type="checkbox" checked={modalSelected.includes(idx)} onChange={() => toggleModalIndex(idx)} />
+                      <input
+                        type="checkbox"
+                        checked={modalSelected.includes(idx)}
+                        onChange={() => toggleModalIndex(idx)}
+                      />
                       <span style={{ width: 56, opacity: 0.7 }}>[{idx}]</span>
                       <span style={{ fontFamily: "monospace" }}>{v.toFixed(4)}</span>
                     </label>
@@ -527,11 +582,21 @@ export default function Page() {
                   <div style={{ fontWeight: 700 }}>Método final</div>
                   <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
                     <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input type="radio" name="method" checked={modalMethod === "media"} onChange={() => setModalMethod("media")} />
+                      <input
+                        type="radio"
+                        name="method"
+                        checked={modalMethod === "media"}
+                        onChange={() => setModalMethod("media")}
+                      />
                       Média
                     </label>
                     <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input type="radio" name="method" checked={modalMethod === "mediana"} onChange={() => setModalMethod("mediana")} />
+                      <input
+                        type="radio"
+                        name="method"
+                        checked={modalMethod === "mediana"}
+                        onChange={() => setModalMethod("mediana")}
+                      />
                       Mediana
                     </label>
                     <span style={{ opacity: 0.7 }}>
@@ -542,12 +607,18 @@ export default function Page() {
 
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontWeight: 700 }}>Valor final (manual)</div>
-                  <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>{fmtBRL(modalStats.finalVal)}</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
+                    {fmtBRL(modalStats.finalVal)}
+                  </div>
                 </div>
 
                 <div style={{ marginTop: 16 }}>
                   <div style={{ fontWeight: 700 }}>Justificativa</div>
-                  <select value={modalJustCode} onChange={(e) => setModalJustCode(e.target.value)} style={{ marginTop: 6, width: "100%" }}>
+                  <select
+                    value={modalJustCode}
+                    onChange={(e) => setModalJustCode(e.target.value)}
+                    style={{ marginTop: 6, width: "100%" }}
+                  >
                     <option value="">(opcional) Selecione um motivo</option>
                     <option value="OUTLIERS_MANUAL">Exclusão manual de valores destoantes</option>
                     <option value="DADOS_INCONSISTENTES">Inconsistência/indícios de erro nos dados</option>
