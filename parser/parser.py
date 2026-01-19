@@ -344,19 +344,16 @@ def build_itens_relatorio(
     for item, g_raw in df.groupby("Item", sort=False):
         catmat = g_raw["CATMAT"].dropna().iloc[0] if ("CATMAT" in g_raw.columns and g_raw["CATMAT"].notna().any()) else ""
 
-        # valores brutos (numéricos) na ordem das linhas
-        g = g_raw.copy()
-        g["preco_num"] = g["Preço unitário"].apply(preco_txt_to_float)
-        valores_brutos_all = g["preco_num"].tolist()
-        # lista de valores numéricos e também um mapping índice->valor para seleção manual
-        valores_brutos = []
-        idx_map = []  # índices na lista original para cada valor numérico
-        for i, v in enumerate(valores_brutos_all):
-            fv = _safe_float(v)
+        # valores brutos (numéricos) e fonte (alinhados) na ordem das linhas
+        # Observação: índices do override manual se referem a essa lista numérica filtrada.
+        valores_brutos: list[float] = []
+        fontes_brutos: list[str] = []
+        for _, row in g_raw.iterrows():
+            fv = _safe_float(preco_txt_to_float(row.get("Preço unitário")))
             if fv is None:
                 continue
             valores_brutos.append(float(fv))
-            idx_map.append(i)
+            fontes_brutos.append(str(row.get("Fonte") or ""))
 
         n_bruto = int(len(g_raw))
 
@@ -418,8 +415,14 @@ def build_itens_relatorio(
         valores_finais = valores_finais_auto[:]
         manual_info = None
 
-        # Só aceita override manual quando último licitado > valor auto (conforme regra do front)
-        allow_manual = (last_quote is not None and valor_auto is not None and valor_auto < last_quote)
+        # Só aceita override manual quando o valor calculado estiver até 20% acima do último licitado
+        # (i.e., valor_auto <= 1.2 * last_quote)
+        allow_manual = (
+            last_quote is not None
+            and last_quote > 0
+            and valor_auto is not None
+            and valor_auto <= (1.2 * last_quote)
+        )
 
         ov = manual_overrides.get(item) if isinstance(manual_overrides, dict) else None
         if allow_manual and isinstance(ov, dict):
@@ -474,6 +477,7 @@ def build_itens_relatorio(
                 "n_bruto": n_bruto,
                 "n_brutos_numericos": int(len(valores_brutos)),
                 "valores_brutos": valores_brutos,
+                "fontes_brutos": fontes_brutos,
                 "valor_auto": valor_auto,
                 "metodo_auto": metodo_auto,
                 "n_final_auto": int(len(valores_finais_auto)),
@@ -842,6 +846,13 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
         s = f"{pct:.2f}".replace(".", ",")
         return f"{s}%"
 
+    # formatação dinâmica: >= 1 -> 2 casas; < 1 -> 4 casas
+    def _num_dyn(v: float | None) -> str:
+        if v is None:
+            return ""
+        dec = 2 if abs(v) >= 1 else 4
+        return f"{v:.{dec}f}"
+
     out: list[str] = []
 
     payload = payload or {}
@@ -872,20 +883,28 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
         out.append("<<B>>ANÁLISE MANUAL<<ENDB>>")
         out.append("Valores brutos (numéricos) disponíveis:")
         vals = r.get("valores_brutos") or []
+        fontes = r.get("fontes_brutos") or []
         for i, v in enumerate(vals):
-            out.append(f"[{i}] {v:.4f}")
+            fonte = fontes[i] if i < len(fontes) else ""
+            out.append(f"[{i+1}] {_num_dyn(v)} | Fonte: {fonte}")
         out.append("")
         inc = manual.get("included_indices") or []
-        out.append(f"Índices incluídos: {inc}")
+        inc_1 = []
+        for x in inc:
+            try:
+                inc_1.append(int(x) + 1)
+            except Exception:
+                pass
+        out.append(f"Índices incluídos: {inc_1}")
         out.append(f"Quantidade excluída manualmente: {manual.get('excluded_count', '')}")
         out.append(f"Método escolhido: {manual.get('method', '')}")
 
         mean = _safe_float(manual.get("mean"))
         median = _safe_float(manual.get("median"))
-        cv = _safe_float(manual.get("cv"))
-        out.append(f"Média (dos incluídos): {(mean if mean is not None else 0):.4f}" if mean is not None else "Média (dos incluídos):")
-        out.append(f"Mediana (dos incluídos): {(median if median is not None else 0):.4f}" if median is not None else "Mediana (dos incluídos):")
-        out.append(f"Coeficiente de Variação (dos incluídos): {_cv_pct_txt(cv)}")
+        cvv = _safe_float(manual.get("cv"))
+        out.append(f"Média (dos incluídos): {_num_dyn(mean)}" if mean is not None else "Média (dos incluídos):")
+        out.append(f"Mediana (dos incluídos): {_num_dyn(median)}" if median is not None else "Mediana (dos incluídos):")
+        out.append(f"Coeficiente de Variação (dos incluídos): {_cv_pct_txt(cvv)}")
         out.append(f"Valor Final (manual): {float_to_preco_txt(_safe_float(manual.get('valor_final')), decimals=2)}")
 
         just_code = (manual.get("justificativa_codigo") or "").strip()
@@ -944,7 +963,7 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
 
         # Caso com poucos valores
         if n_parse == 1:
-            out.append(f"Valor único: {vals[0]:.4f}")
+            out.append(f"Valor único: {_num_dyn(vals[0])}")
             out.append("Preço Final Escolhido: Valor único.")
             out.append(f"Valor escolhido: {float_to_preco_txt(vals[0], decimals=2)}")
             out.append("")
@@ -958,10 +977,10 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
             mean = sum(vals) / len(vals)
             med = float(pd.Series(vals).median())
             out.append("Valores Iniciais considerados no cálculo:")
-            out.append(", ".join([f"{v:.4f}" for v in vals]))
+            out.append(", ".join([_num_dyn(v) for v in vals]))
             out.append("")
-            out.append(f"Média: {mean:.4f}")
-            out.append(f"Mediana: {med:.4f}")
+            out.append(f"Média: {_num_dyn(mean)}")
+            out.append(f"Mediana: {_num_dyn(med)}")
             out.append(f"CV: {_cv_pct_txt(cv)}")
 
             if cv is None:
@@ -988,33 +1007,33 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
         rep = _audit_item(vals, upper=1.25, lower=0.75)
 
         out.append("Valores Iniciais considerados no cálculo:")
-        out.append(", ".join([f"{v:.4f}" for v in rep["iniciais"]]))
+        out.append(", ".join([_num_dyn(v) for v in rep["iniciais"]]))
         out.append("")
 
         out.append("--- Preços exclúidos por serem Excessivamente Elevados ---")
         out.append(f"Quantidade: {len(rep['excluidos_altos'])}")
         for r in rep["excluidos_altos"]:
             out.append(
-                f"Valor={r['v']:.4f} | Média dos demais={r['m_outros']:.4f} | Proporção={r['ratio']:.4f}"
+                f"Valor={_num_dyn(r['v'])} | Média dos demais={_num_dyn(r['m_outros'])} | Proporção={r['ratio']:.4f}"
             )
         out.append("")
 
         out.append("Mantidos após exclusão dos Excessivamente Elevados:")
-        out.append(", ".join([f"{v:.4f}" for v in rep["apos_alto"]]))
+        out.append(", ".join([_num_dyn(v) for v in rep["apos_alto"]]))
         out.append("")
 
         out.append("--- Preços exclúidos por serem Inexequíveis ---")
         out.append(f"Quantidade: {len(rep['excluidos_baixos'])}")
         for r in rep["excluidos_baixos"]:
             out.append(
-                f"Valor={r['v']:.4f} | Média dos demais={r['m_outros']:.4f} | Proporção={r['ratio']:.4f}"
+                f"Valor={_num_dyn(r['v'])} | Média dos demais={_num_dyn(r['m_outros'])} | Proporção={r['ratio']:.4f}"
             )
         out.append("")
 
         out.append("Valores considerados no cálculo final:")
-        out.append(", ".join([f"{v:.4f}" for v in rep["finais"]]))
+        out.append(", ".join([_num_dyn(v) for v in rep["finais"]]))
         out.append(f"Número de valores considerados no cálculo final: {len(rep['finais'])}")
-        media_txt = "" if rep["media_final"] is None else f"{rep['media_final']:.4f}"
+        media_txt = "" if rep["media_final"] is None else _num_dyn(rep["media_final"])
         out.append(f"Média final: {media_txt}")
         out.append(f"Coeficiente de Variação final: {_cv_pct_txt(rep['cv_final'])}")
 
