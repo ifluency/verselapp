@@ -469,6 +469,24 @@ export default function Page() {
                             ? "Ajustar manualmente"
                             : "Só disponível quando Valor calculado < Último licitado"
                         }
+                        style={
+                          r.allowManual
+                            ? {
+                                background: "#d32f2f",
+                                color: "white",
+                                border: "1px solid #b71c1c",
+                                fontWeight: 700,
+                                padding: "4px 10px",
+                                borderRadius: 6,
+                                cursor: "pointer",
+                              }
+                            : {
+                                padding: "4px 10px",
+                                borderRadius: 6,
+                                cursor: "not-allowed",
+                                opacity: 0.6,
+                              }
+                        }
                       >
                         Ajustar
                       </button>
