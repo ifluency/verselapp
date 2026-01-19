@@ -1,179 +1,188 @@
 import io
 import cgi
-import traceback
-from urllib.parse import urlparse, parse_qs
+import zipfile
 from http.server import BaseHTTPRequestHandler
 
 import pandas as pd
-from parser.parser import process_pdf_bytes
+
+from parser.parser import (
+    process_pdf_bytes,
+    build_memoria_calculo_text,
+)
 
 
-def preco_txt_to_float(preco_txt: str) -> float | None:
+def _simple_text_pdf_bytes(text: str, title: str = "Memória de Cálculo") -> bytes:
     """
-    Converte texto pt-br para float para cálculo.
-    Ex:
-      "9.309,0000" -> 9309.0
-      "150,4500" -> 150.45
+    Gera um PDF simples (texto monoespaçado) sem depender de bibliotecas externas.
+    Observação: isso é um PDF mínimo, mas válido para abrir no Acrobat/Chrome.
     """
-    if preco_txt is None:
-        return None
-    s = str(preco_txt).strip()
-    if not s:
-        return None
-    # remove milhar e troca decimal
-    s = s.replace("R$", "").strip()
-    s = s.replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-@@ -27,20 +23,13 @@
+    # Sanitiza para latin-1 básico (pdf simples); substitui caracteres fora
+    def to_pdf_safe(s: str) -> str:
+        # Troca caracteres não latin-1 por '?'
+        try:
+            return s.encode("latin-1", "replace").decode("latin-1")
+        except Exception:
+            return s
 
+    lines = [to_pdf_safe(l) for l in (text or "").splitlines()]
+    # Limita linhas enormes (evita PDF gigante/timeout)
+    if len(lines) > 20000:
+        lines = lines[:20000] + ["", "[TRUNCADO: muitas linhas no relatório]"]
 
-def float_to_preco_txt(x: float | None) -> str:
-    """
-    Volta para texto com vírgula e 4 casas, para o Excel pt-br ficar consistente.
-    """
-    if x is None:
-        return ""
-    s = f"{x:.4f}"
-    return s.replace(".", ",")
+    # PDF básico com fonte Courier
+    # Vamos paginar a cada ~55 linhas
+    page_lines = 55
+    pages = [lines[i:i + page_lines] for i in range(0, len(lines), page_lines)]
+    if not pages:
+        pages = [["(vazio)"]]
 
+    # Helpers PDF
+    def pdf_escape(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
-def coeficiente_variacao(vals: list[float]) -> float | None:
-    """
-    CV = desvio padrão / média
-    Usa desvio padrão populacional (ddof=0) para estabilidade.
-    """
-    if not vals:
-        return None
-    mean = sum(vals) / len(vals)
-@@ -59,18 +48,10 @@
+    objects = []
+    xref = []
 
+    def add_obj(obj_str: str) -> int:
+        objects.append(obj_str)
+        return len(objects)
 
-def filtrar_outliers_por_ratio(vals: list[float], upper: float = 1.25, lower: float = 0.75) -> list[float]:
-    """
-    Aplica os passos 1-4 do seu método para n>=5:
-    - ratio = valor / média(dos outros)
-    - remove "elevados" (ratio > upper)
-    - recalcula ratios no conjunto restante
-    - remove "inexequíveis" (ratio < lower)
-    Retorna lista final (mantém ordem original dos remanescentes).
-    """
-    if len(vals) < 2:
-        return vals[:]
+    # 1) Catalog, 2) Pages
+    # Vamos criar Page objects depois
+    # Fonte
+    font_obj = add_obj("<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>")
 
-    # PASSO 1/2: remove elevados (ratio > upper)
-    # PASSO 1/2 (elevados): ratio = valor / média(outros)
-    keep = []
-    for i, v in enumerate(vals):
-        m = media_sem_o_valor(vals, i)
-@@ -81,7 +62,7 @@
-        if ratio <= upper:
-            keep.append(v)
+    # Pages placeholder (vamos preencher kids depois)
+    pages_obj_index = add_obj("<< /Type /Pages /Kids [] /Count 0 >>")
 
-    # PASSO 3/4: remove inexequíveis (ratio < lower) com base no conjunto já filtrado
-    # PASSO 3/4 (inexequíveis) no conjunto filtrado
-    if len(keep) < 2:
-        return keep
+    catalog_obj_index = add_obj(f"<< /Type /Catalog /Pages {pages_obj_index} 0 R >>")
 
-@@ -99,10 +80,6 @@
+    page_obj_indices = []
+    content_obj_indices = []
 
+    for pidx, plines in enumerate(pages, start=1):
+        # Conteúdo da página
+        # Coordenadas: começa no topo (y=800) e desce 14 por linha
+        y_start = 800
+        line_h = 14
+        x = 40
 
-def gerar_resumo(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Gera um DF com 1 linha por Item:
-    Item; CATMAT; Entradas iniciais; Entradas finais; CV; Preço final escolhido; Valor escolhido
-    """
-    if df is None or df.empty:
-        return pd.DataFrame(
-            columns=[
-@@ -116,30 +93,30 @@
-            ]
+        content_lines = []
+        content_lines.append("BT")
+        content_lines.append(f"/F1 10 Tf")
+        content_lines.append(f"1 0 0 1 {x} {y_start} Tm")
+
+        # Título na primeira página
+        if pidx == 1:
+            content_lines.append(f"({pdf_escape(title)}) Tj")
+            content_lines.append(f"0 -{line_h*2} Td")
+
+        for line in plines:
+            content_lines.append(f"({pdf_escape(line)}) Tj")
+            content_lines.append(f"0 -{line_h} Td")
+
+        content_lines.append("ET")
+
+        stream = "\n".join(content_lines).encode("latin-1", "replace")
+        content_obj = add_obj(
+            f"<< /Length {len(stream)} >>\nstream\n{stream.decode('latin-1')}\nendstream"
         )
+        content_obj_indices.append(content_obj)
 
-    # converte preço para float (apenas para cálculo)
-    df_calc = df.copy()
-    df_calc["preco_num"] = df_calc["Preço unitário"].apply(preco_txt_to_float)
+        page_obj = add_obj(
+            f"<< /Type /Page /Parent {pages_obj_index} 0 R "
+            f"/MediaBox [0 0 595 842] "
+            f"/Resources << /Font << /F1 {font_obj} 0 R >> >> "
+            f"/Contents {content_obj} 0 R >>"
+        )
+        page_obj_indices.append(page_obj)
 
-    # remove linhas sem preço numérico
-    if "Preço unitário" not in df_calc.columns:
-        # evita falha silenciosa
-        raise ValueError("Coluna 'Preço unitário' não encontrada no dataframe.")
+    # Atualiza Pages obj (Kids + Count)
+    kids = " ".join([f"{i} 0 R" for i in page_obj_indices])
+    objects[pages_obj_index - 1] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_obj_indices)} >>"
 
-    df_calc["preco_num"] = df_calc["Preço unitário"].apply(preco_txt_to_float)
-    df_calc = df_calc[df_calc["preco_num"].notna()].copy()
+    # Monta arquivo PDF
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n")
 
-    rows = []
+    # xref offsets
+    for i, obj in enumerate(objects, start=1):
+        xref.append(out.tell())
+        out.write(f"{i} 0 obj\n".encode("ascii"))
+        out.write(obj.encode("latin-1", "replace"))
+        out.write(b"\nendobj\n")
 
-    # agrupa por Item
-    for item, g in df_calc.groupby("Item", sort=False):
-        catmat = g["CATMAT"].dropna().iloc[0] if g["CATMAT"].notna().any() else ""
-        vals = g["preco_num"].astype(float).tolist()
+    xref_start = out.tell()
+    out.write(f"xref\n0 {len(objects)+1}\n".encode("ascii"))
+    out.write(b"0000000000 65535 f \n")
+    for off in xref:
+        out.write(f"{off:010d} 00000 n \n".encode("ascii"))
 
-        n_inicial = len(vals)
+    out.write(b"trailer\n")
+    out.write(f"<< /Size {len(objects)+1} /Root {catalog_obj_index} 0 R >>\n".encode("ascii"))
+    out.write(b"startxref\n")
+    out.write(f"{xref_start}\n".encode("ascii"))
+    out.write(b"%%EOF")
+    return out.getvalue()
 
-        # Se quiser "mais de 5" estritamente, troque para: if n_inicial <= 5: ...
-        # regra: <5 -> CV decide média/mediana; >=5 -> filtro e média
-        if n_inicial < 5:
-            cv = coeficiente_variacao(vals)
-            mean = sum(vals) / len(vals) if vals else None
-            med = float(pd.Series(vals).median()) if vals else None
-
-            if cv is None:
-                # fallback: mediana
-                escolhido = "mediana"
-                valor = med
-            else:
-@@ -154,14 +131,10 @@
-            cv_final = cv
-
-        else:
-            # método outliers
-            vals_filtrados = filtrar_outliers_por_ratio(vals, upper=1.25, lower=0.75)
-            n_final = len(vals_filtrados)
-
-            # média final sempre
-            valor = (sum(vals_filtrados) / n_final) if n_final > 0 else None
-            escolhido = "média"
-
-            cv_final = coeficiente_variacao(vals_filtrados) if n_final > 0 else None
-
-        rows.append(
-@@ -181,6 +154,10 @@
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # debug via querystring ?debug=1
-        q = parse_qs(urlparse(self.path).query)
-        debug_mode = q.get("debug", ["0"])[0] in ("1", "true", "True", "yes", "sim")
-
         try:
             content_type = self.headers.get("content-type", "")
             if "multipart/form-data" not in content_type:
-@@ -209,7 +186,6 @@
+                return self._send_text(400, "Envie multipart/form-data com campo 'file'.")
+
+            content_length = int(self.headers.get("content-length", "0"))
+            if content_length <= 0:
+                return self._send_text(400, "Corpo vazio.")
+
+            body = self.rfile.read(content_length)
+
+            environ = {
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+                "CONTENT_LENGTH": str(content_length),
+            }
+            fp = io.BytesIO(body)
+            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+
+            if "file" not in form:
+                return self._send_text(400, "Campo 'file' ausente.")
+
             pdf_bytes = form["file"].file.read()
 
             df = process_pdf_bytes(pdf_bytes)
 
             if df is None or df.empty:
-                self._send_text(200, "Nenhuma linha com Compõe=Sim foi encontrada no arquivo enviado.")
-                return
-@@ -236,15 +212,26 @@
-            self.wfile.write(xlsx_bytes)
+                return self._send_text(200, "Nenhuma linha encontrada no PDF (ou formato não reconhecido).")
+
+            # Excel
+            excel_buf = io.BytesIO()
+            df.to_excel(excel_buf, index=False)
+            excel_bytes = excel_buf.getvalue()
+
+            # Memória de cálculo (texto -> pdf)
+            memoria_txt = build_memoria_calculo_text(df)
+            memoria_pdf = _simple_text_pdf_bytes(memoria_txt, title="Memória de Cálculo")
+
+            # ZIP com os dois
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+                z.writestr("relatorio.xlsx", excel_bytes)
+                z.writestr("Memoria_de_Calculo.pdf", memoria_pdf)
+
+            zip_bytes = zip_buf.getvalue()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="resultado_extracao.zip"')
+            self.send_header("Content-Length", str(len(zip_bytes)))
+            self.end_headers()
+            self.wfile.write(zip_bytes)
 
         except Exception as e:
             self._send_text(500, f"Erro ao processar: {str(e)}")
-            tb = traceback.format_exc()
-
-            # Console do Vercel (Logs)
-            print("ERROR /api/parse:", str(e))
-            print(tb)
-
-            if debug_mode:
-                # Devolve o stacktrace pro navegador
-                self._send_text(500, f"Erro ao processar:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
-            else:
-                # Mensagem curta pro usuário final
-                self._send_text(500, "Falha ao processar. Tente novamente ou use /api/parse?debug=1 para ver detalhes.")
 
     def do_GET(self):
         self._send_text(405, "Use POST com multipart/form-data (campo 'file').")
