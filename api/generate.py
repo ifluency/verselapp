@@ -65,7 +65,11 @@ class handler(BaseHTTPRequestHandler):
 
             xlsx_bytes = build_excel_bytes(df, itens)
             pdf_memoria_bytes = build_memoria_calculo_pdf_bytes(df, payload=payload)
-            pdf_comp_bytes = build_pdf_tabela_comparativa_bytes(itens)
+            # Meta da lista (título do PDF comparativo)
+            lista_meta = payload.get("lista_meta") or payload.get("lista") or {}
+            if not isinstance(lista_meta, dict):
+                lista_meta = {}
+            pdf_comp_bytes = build_pdf_tabela_comparativa_bytes(itens, meta=lista_meta)
 
             zip_out = io.BytesIO()
             with zipfile.ZipFile(zip_out, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
