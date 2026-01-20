@@ -10,6 +10,46 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
+
+# ===============================
+# Validação do tipo de relatório
+# ===============================
+
+
+class PdfIncompatibilityError(Exception):
+    """Erro amigável para indicar que o PDF enviado não é compatível."""
+
+
+def _validate_relatorio_resumido_or_raise(pdf: pdfplumber.PDF):
+    """Valida se o PDF é o relatório correto (Resumido).
+
+    Regras:
+      - Se na primeira página existir "Relatório Resumido" -> OK
+      - Se existir "Relatório Detalhado" -> erro (usuário enviou o PDF errado)
+      - Se não existir nenhum dos dois -> erro de incompatibilidade
+    """
+    if not getattr(pdf, "pages", None) or len(pdf.pages) == 0:
+        raise PdfIncompatibilityError("PDF inválido: não foi possível ler páginas do arquivo.")
+
+    first_text = (pdf.pages[0].extract_text(layout=True) or "").lower()
+
+    has_resumido = ("relatório resumido" in first_text) or ("relatorio resumido" in first_text)
+    has_detalhado = ("relatório detalhado" in first_text) or ("relatorio detalhado" in first_text)
+
+    if has_resumido:
+        return
+
+    if has_detalhado:
+        raise PdfIncompatibilityError(
+            "PDF incorreto: você carregou o Relatório Detalhado. "
+            "Por favor, utilize a versão Relatório Resumido."
+        )
+
+    raise PdfIncompatibilityError(
+        "PDF incompatível: não foi possível identificar 'Relatório Resumido' nem 'Relatório Detalhado' "
+        "no início do documento. Verifique se o arquivo enviado é o relatório resumido do ComprasGOV."
+    )
+
 RE_ITEM = re.compile(r"^Item\s*:?\s*(\d+)\b", re.IGNORECASE)
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
 
@@ -129,7 +169,8 @@ def parse_row_fields(row_line: str):
     data = toks[date_idx]
 
     price_pat = re.compile(r"^\d{1,3}(?:\.\d{3})*,\d{2,4}$")
-    qty_pat = re.compile(r"^\d{1,3}(?:\.\d{3})*(?:[\.,]\d+)?$")
+    # Quantidade pode vir sem separador de milhar (ex.: 1252, 4500) ou com (ex.: 1.252)
+    qty_pat = re.compile(r"^\d+(?:\.\d{3})*(?:[\.,]\d+)?$")
 
     # Preço: procurar de trás pra frente antes da data
     preco_raw = None
@@ -159,9 +200,9 @@ def parse_row_fields(row_line: str):
     if preco_raw is None or preco_idx is None:
         return None
 
-    # Quantidade: procurar número antes do preço
+    # Quantidade: normalmente é o PRIMEIRO número após Nº/Inciso (antes da unidade e do preço)
     qtd = None
-    for j in range(preco_idx - 1, 1, -1):
+    for j in range(2, preco_idx):
         if qty_pat.fullmatch(toks[j]):
             qtd = toks[j]
             break
@@ -640,6 +681,8 @@ def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list[dict]]
     capture = False
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        # Valida rapidamente se o PDF é o relatório correto (Resumido)
+        _validate_relatorio_resumido_or_raise(pdf)
         for page in pdf.pages:
             text = page.extract_text(layout=True) or ""
             lines = text.splitlines()
