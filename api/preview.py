@@ -5,7 +5,7 @@ import traceback
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler
 
-from parser.parser import process_pdf_bytes, build_itens_relatorio
+from parser.parser import process_pdf_bytes, build_itens_relatorio, PdfIncompatibilityError
 
 
 class handler(BaseHTTPRequestHandler):
@@ -39,21 +39,15 @@ class handler(BaseHTTPRequestHandler):
 
             pdf_bytes = form["file"].file.read()
             df = process_pdf_bytes(pdf_bytes)
+
             if df is None or df.empty:
                 self._send_json(200, {"items": [], "message": "Nenhuma linha com Compõe=Sim foi encontrada."})
                 return
 
             itens = build_itens_relatorio(df, payload=None)
 
-            # Resposta enxuta para o front (prévia)
             out_items = []
             for it in itens:
-                valores = it.get("valores_brutos") or []
-                fontes = it.get("fontes_brutos") or []
-                pares = []
-                for i, v in enumerate(valores):
-                    fonte = fontes[i] if i < len(fontes) else ""
-                    pares.append({"idx": i, "valor": v, "fonte": fonte})
                 out_items.append(
                     {
                         "item": str(it.get("item")),
@@ -63,11 +57,14 @@ class handler(BaseHTTPRequestHandler):
                         "excl_altos": int(it.get("excl_altos") or 0),
                         "excl_baixos": int(it.get("excl_baixos") or 0),
                         "valor_calculado": it.get("valor_auto"),
-                        "valores_brutos": pares,
+                        "valores_brutos": it.get("valores_brutos") or [],
                     }
                 )
 
             self._send_json(200, {"items": out_items})
+
+        except PdfIncompatibilityError as e:
+            self._send_text(400, str(e))
 
         except Exception as e:
             tb = traceback.format_exc()
