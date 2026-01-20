@@ -5,7 +5,7 @@ import traceback
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler
 
-from parser.parser import process_pdf_bytes, build_itens_relatorio
+from parser.parser import process_pdf_bytes, build_itens_relatorio, PdfIncompatibilityError
 
 
 class handler(BaseHTTPRequestHandler):
@@ -68,6 +68,9 @@ class handler(BaseHTTPRequestHandler):
                 )
 
             self._send_json(200, {"items": out_items})
+
+        except PdfIncompatibilityError as e:
+            self._send_text(400, str(e))
 
         except Exception as e:
             tb = traceback.format_exc()
