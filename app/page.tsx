@@ -80,6 +80,11 @@ export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>("");
 
+  // Campos obrigatórios para o PDF Tabela Comparativa de Valores
+  const [numeroLista, setNumeroLista] = useState<string>("");
+  const [nomeLista, setNomeLista] = useState<string>("");
+  const [processoSEI, setProcessoSEI] = useState<string>("");
+
   // Destaque visual: linha atualmente em edição do "Último licitado"
   const [activeLastQuoteRow, setActiveLastQuoteRow] = useState<string | null>(null);
 
@@ -222,6 +227,9 @@ export default function Page() {
     setPreview([]);
     setOverrides({});
     setLastQuotes({});
+    setNumeroLista("");
+    setNomeLista("");
+    setProcessoSEI("");
 
     try {
       const form = new FormData();
@@ -252,6 +260,11 @@ export default function Page() {
       return;
     }
 
+    if (!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim()) {
+      setStatus("Preencha os campos obrigatórios: Número da Lista, Nome da Lista e Processo SEI.");
+      return;
+    }
+
     setStatus("Gerando arquivos finais...");
     setLoadingGenerate(true);
 
@@ -275,6 +288,11 @@ export default function Page() {
     const payload = {
       last_quotes,
       manual_overrides,
+      lista_meta: {
+        numero_lista: numeroLista.trim(),
+        nome_lista: nomeLista.trim(),
+        processo_sei: processoSEI.trim(),
+      },
     };
 
     try {
@@ -380,7 +398,14 @@ export default function Page() {
 
         <button
           onClick={generateZip}
-          disabled={!file || !preview.length || loadingGenerate}
+          disabled={
+            !file ||
+            !preview.length ||
+            loadingGenerate ||
+            !numeroLista.trim() ||
+            !nomeLista.trim() ||
+            !processoSEI.trim()
+          }
           style={{ fontWeight: 700 }}
         >
           {loadingGenerate ? "Gerando..." : "Gerar ZIP (Excel + PDFs)"}
@@ -422,6 +447,81 @@ export default function Page() {
 
       {preview.length > 0 && (
         <div style={{ marginTop: 16, overflowX: "hidden" }}>
+          {/* Campos obrigatórios para o PDF comparativo */}
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              alignItems: "flex-end",
+              marginBottom: 12,
+              padding: "10px 12px",
+              border: "1px solid #ddd",
+              borderRadius: 8,
+              background: "#fafafa",
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontWeight: 700 }}>
+                Número da Lista <span style={{ color: "#c62828" }}>*</span>
+              </label>
+              <input
+                value={numeroLista}
+                onChange={(e) => setNumeroLista(e.target.value)}
+                placeholder="Ex: 123.26"
+                style={{
+                  width: 160,
+                  fontSize: 14,
+                  padding: "6px 8px",
+                  border: "1px solid #ccc",
+                  borderRadius: 6,
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 260 }}>
+              <label style={{ fontWeight: 700 }}>
+                Nome da Lista <span style={{ color: "#c62828" }}>*</span>
+              </label>
+              <input
+                value={nomeLista}
+                onChange={(e) => setNomeLista(e.target.value)}
+                placeholder="Ex: Gerais Injetáveis"
+                style={{
+                  width: "100%",
+                  fontSize: 14,
+                  padding: "6px 8px",
+                  border: "1px solid #ccc",
+                  borderRadius: 6,
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
+              <label style={{ fontWeight: 700 }}>
+                Processo SEI <span style={{ color: "#c62828" }}>*</span>
+              </label>
+              <input
+                value={processoSEI}
+                onChange={(e) => setProcessoSEI(e.target.value)}
+                placeholder="Ex: 23123.000000/2026-00"
+                style={{
+                  width: 220,
+                  fontSize: 14,
+                  padding: "6px 8px",
+                  border: "1px solid #ccc",
+                  borderRadius: 6,
+                }}
+              />
+            </div>
+
+            {(!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim()) && (
+              <div style={{ color: "#c62828", fontWeight: 600, marginLeft: "auto" }}>
+                Preencha os campos obrigatórios para liberar o ZIP.
+              </div>
+            )}
+          </div>
+
           <table
             style={{
               borderCollapse: "collapse",
