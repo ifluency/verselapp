@@ -2,7 +2,7 @@ import io
 import cgi
 from http.server import BaseHTTPRequestHandler
 
-from parser.parser import process_pdf_bytes
+from parser.parser import process_pdf_bytes, PdfIncompatibilityError
 
 
 def preco_txt_to_float(preco_txt: str):
@@ -200,6 +200,9 @@ class handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+
+        except PdfIncompatibilityError as e:
+            self._send_text(400, str(e))
 
         except Exception as e:
             self._send_text(500, f"Erro no debug: {str(e)}")
