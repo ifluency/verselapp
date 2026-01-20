@@ -1268,7 +1268,9 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
             }
             b64_str = b64_map.get(kind, "")
             if b64_str:
-                raw = base64.b64decode(b64_str)
+                # remove quebras de linha/espacos para garantir decode correto
+                compact = re.sub(r"\s+", "", b64_str)
+                raw = base64.b64decode(compact)
                 return ImageReader(io.BytesIO(raw))
         except Exception:
             pass
@@ -1276,9 +1278,11 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         # 2) filesystem
         try:
             assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-            path = os.path.join(assets_dir, f"{kind}.png")
-            if os.path.exists(path):
-                return ImageReader(path)
+            # Preferir JPEG (não depende do Pillow). PNG pode falhar sem Pillow.
+            for ext in (".jpg", ".jpeg", ".png"):
+                path = os.path.join(assets_dir, f"{kind}{ext}")
+                if os.path.exists(path):
+                    return ImageReader(path)
         except Exception:
             pass
         return None
