@@ -80,6 +80,9 @@ export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>("");
 
+  // Destaque visual: linha atualmente em edição do "Último licitado"
+  const [activeLastQuoteRow, setActiveLastQuoteRow] = useState<string | null>(null);
+
   const [preview, setPreview] = useState<PreviewItem[]>([]);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingGenerate, setLoadingGenerate] = useState(false);
@@ -473,11 +476,19 @@ export default function Page() {
               </tr>
             </thead>
             <tbody>
-              {tableRows.map((r, rowIdx) => (
-                <tr
-                  key={r.item}
-                  style={{ background: rowIdx % 2 === 0 ? "#ffffff" : "#f4f4f4" }}
-                >
+              {tableRows.map((r, rowIdx) => {
+                const isActive = activeLastQuoteRow === r.item;
+                const baseBg = rowIdx % 2 === 0 ? "#ffffff" : "#f4f4f4";
+                return (
+                  <tr
+                    key={r.item}
+                    style={{
+                      background: isActive ? "#e8f4ff" : baseBg,
+                      boxShadow: isActive ? "inset 0 0 0 2px #1976d2" : undefined,
+                      position: isActive ? "relative" : undefined,
+                      transition: "background 120ms ease, box-shadow 120ms ease",
+                    }}
+                  >
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.item}</td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.catmat}</td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.n_bruto}</td>
@@ -493,8 +504,20 @@ export default function Page() {
                       onChange={(e) =>
                         setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
                       }
+                      onFocus={() => setActiveLastQuoteRow(r.item)}
+                      onBlur={() =>
+                        setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))
+                      }
                       placeholder="ex: 1.234,56"
-                      style={{ width: 88, fontSize: 13, padding: "3px 6px" }}
+                      style={{
+                        width: 88,
+                        fontSize: 13,
+                        padding: "3px 6px",
+                        border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
+                        borderRadius: 6,
+                        outline: "none",
+                        background: isActive ? "#ffffff" : undefined,
+                      }}
                     />
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.modo}</td>
@@ -569,7 +592,8 @@ export default function Page() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
