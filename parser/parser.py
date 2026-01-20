@@ -10,11 +10,69 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
-RE_ITEM = re.compile(r"^Item\s*:?\s*(\d+)\b", re.IGNORECASE)
+
+# =========================================================
+# Validação do tipo de relatório (Resumido vs Detalhado)
+# =========================================================
+
+class PdfIncompatibilityError(Exception):
+    """Erro para indicar PDF incompatível (mensagem amigável para o usuário)."""
+    pass
+
+
+def _detect_report_type_or_raise(pdf_bytes: bytes) -> str:
+    """
+    Verifica, na primeira página do PDF, se é 'Relatório Resumido' ou 'Relatório Detalhado'.
+
+    Regras:
+    - Se tiver 'Relatório Resumido' -> OK
+    - Se tiver 'Relatório Detalhado' -> erro: usuário carregou PDF errado
+    - Se não tiver nenhum -> erro de incompatibilidade
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            if not pdf.pages:
+                raise PdfIncompatibilityError("PDF inválido: não foi possível ler páginas do arquivo.")
+            first_text = (pdf.pages[0].extract_text() or "")
+    except PdfIncompatibilityError:
+        raise
+    except Exception:
+        raise PdfIncompatibilityError("PDF inválido: não foi possível ler o conteúdo da primeira página.")
+
+    t = first_text.lower()
+
+    has_resumido = ("relatório resumido" in t) or ("relatorio resumido" in t)
+    has_detalhado = ("relatório detalhado" in t) or ("relatorio detalhado" in t)
+
+    if has_resumido:
+        return "resumido"
+
+    if has_detalhado:
+        raise PdfIncompatibilityError(
+            "PDF incorreto: você carregou o **Relatório Detalhado**. "
+            "Por favor, gere e envie a versão **Relatório Resumido**."
+        )
+
+    raise PdfIncompatibilityError(
+        "PDF incompatível: não foi possível identificar **Relatório Resumido** nem **Relatório Detalhado** "
+        "na primeira página. Verifique se o arquivo é a versão resumida correta do ComprasGOV."
+    )
+
+
+# =========================================================
+# Regex / Constantes
+# =========================================================
+
+# Aceita "Item: 1" e "Item 1"
+RE_ITEM = re.compile(r"^\s*Item\s*:?\s*(\d+)\b", re.IGNORECASE)
+
+# Catmat aparece como "123456 - ..."
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
 
 RE_PAGE_MARK = re.compile(r"^\s*\d+\s+de\s+\d+\s*$", re.IGNORECASE)
 RE_DATE_TOKEN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+
+# Linhas de registros normalmente começam com "Nº Inciso" (ex.: "1 I ...")
 RE_ROW_START = re.compile(r"^\s*(\d+)\s+([IVX]+)\b", re.IGNORECASE)
 
 INCISO_TO_FONTE = {
@@ -38,153 +96,53 @@ FINAL_COLUMNS = [
 ]
 
 
+# =========================================================
+# Helpers de limpeza / detecção de tabela
+# =========================================================
+
 def clean_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
 def normalize_text(s: str) -> str:
-    s = (s or "").replace("\u00a0", " ")
-    s = clean_spaces(s)
-
-    # gov. br -> gov.br
-    s = re.sub(r"(gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
-    # Compras.gov. br -> Compras.gov.br
-    s = re.sub(r"(Compras\.gov\.)\s*(br)\b", r"\1\2", s, flags=re.IGNORECASE)
-
-    # “110Unidade” -> “110 Unidade”
-    s = re.sub(r"(\d)([A-Za-zÀ-ÿ])", r"\1 \2", s)
-    s = re.sub(r"([A-Za-zÀ-ÿ])(\d)", r"\1 \2", s)
-
-    # R$ com espaço
-    s = re.sub(r"R\$\s+", "R$ ", s)
-    return s
+    return clean_spaces(s).replace("\u00a0", " ")
 
 
 def is_table_on(line: str) -> bool:
-    """Detecta o início da tabela.
-
-    O PDF pode variar: às vezes existe 'Período:', às vezes só o cabeçalho 'Nº Inciso Nome Quantidade ...'.
     """
-    s = normalize_text(line).lower()
-    if ("período:" in s) or ("periodo:" in s):
+    Liga a captura quando:
+    - aparece "Período:" (alguns PDFs)
+    OU
+    - aparece cabeçalho com Nº / Inciso / Quantidade (mais comum)
+    """
+    l = (line or "").lower()
+    if "período" in l or "periodo" in l:
         return True
-    # Cabeçalho típico
-    if ("nº" in s or "no" in s) and ("inciso" in s) and ("quantidade" in s):
-        return True
-    return False
+    return ("nº" in line or "no" in l) and ("inciso" in l) and ("quantidade" in l)
 
 
 def is_table_off(line: str) -> bool:
-    s = normalize_text(line).lower()
-    return s.startswith("legenda")
+    l = (line or "").strip().lower()
+    # varia por PDF; mantemos gatilhos conservadores
+    return l.startswith("fonte") or l.startswith("nota") or l.startswith("observ")
 
 
 def is_header(line: str) -> bool:
-    s = normalize_text(line).lower()
-    return s.startswith("nº inciso nome quantidade")
+    l = (line or "").lower()
+    return ("preço" in l and "unit" in l and "data" in l) or l.startswith("nº") or l.startswith("no ")
 
 
-def parse_row_fields(row_line: str):
-    """Parseia a linha do registro (pode conter coluna Nome).
+# =========================================================
+# Parsing e numéricos
+# =========================================================
 
-    Exemplo comum:
-      '4 I 110 Unidade R$ 150,4500 05/12/2025 Sim'
-
-    Estratégia mais robusta (de trás pra frente):
-      - Compõe: último token (aceita variações de SIM/NAO/Não)
-      - Data: último token que parece dd/mm/aaaa
-      - Preço: último padrão numérico antes da data (aceita 'R$' separado)
-      - Quantidade: último padrão numérico antes do preço
-    """
-    s = normalize_text(row_line)
-    toks = s.split()
-
-    if len(toks) < 6:
-        return None
-    if not toks[0].isdigit():
-        return None
-    if not re.fullmatch(r"[IVX]+", toks[1], flags=re.IGNORECASE):
-        return None
-
-    no = toks[0]
-    inciso = toks[1].upper()
-
-    # Compõe (aceita Sim/Não/NAO/SIM com pontuação)
-    comp_raw = re.sub(r"[^A-Za-zÀ-ÿ]+", "", toks[-1]).strip().lower()
-    if comp_raw in ("sim",):
-        compoe = "Sim"
-    elif comp_raw in ("nao", "não", "non"):  # tolerância
-        compoe = "Não"
-    else:
-        return None
-
-    # Data
-    date_idx = None
-    for i in range(len(toks) - 1, -1, -1):
-        if RE_DATE_TOKEN.fullmatch(toks[i]):
-            date_idx = i
-            break
-    if date_idx is None:
-        return None
-    data = toks[date_idx]
-
-    price_pat = re.compile(r"^\d{1,3}(?:\.\d{3})*,\d{2,4}$")
-    qty_pat = re.compile(r"^\d{1,3}(?:\.\d{3})*(?:[\.,]\d+)?$")
-
-    # Preço: procurar de trás pra frente antes da data
-    preco_raw = None
-    preco_idx = None
-    for i in range(date_idx - 1, 1, -1):
-        t = toks[i]
-        if price_pat.fullmatch(t):
-            preco_raw = t
-            preco_idx = i
-            break
-        # caso 'R$' esteja separado
-        if t in ("R$", "R$") and i + 1 < len(toks) and price_pat.fullmatch(toks[i + 1]):
-            preco_raw = toks[i + 1]
-            preco_idx = i
-            break
-        if t.startswith("R$") and price_pat.fullmatch(t.replace("R$", "").strip()):
-            preco_raw = t.replace("R$", "").strip()
-            preco_idx = i
-            break
-    if preco_raw is None:
-        # fallback: procurar token numérico antes da data
-        for i in range(date_idx - 1, 1, -1):
-            if re.fullmatch(r"^\d+(?:\.\d{3})*(?:,\d+)?$", toks[i]):
-                preco_raw = toks[i]
-                preco_idx = i
-                break
-    if preco_raw is None or preco_idx is None:
-        return None
-
-    # Quantidade: procurar número antes do preço
-    qtd = None
-    for j in range(preco_idx - 1, 1, -1):
-        if qty_pat.fullmatch(toks[j]):
-            qtd = toks[j]
-            break
-    if qtd is None:
-        return None
-
-    return {
-        "Nº": no,
-        "Inciso": inciso,
-        "Quantidade": qtd,
-        "Preço unitário": preco_raw,
-        "Data": data,
-        "Compõe": compoe,
-    }
-
-
-def preco_txt_to_float(preco_txt: str) -> float | None:
+def preco_txt_to_float(preco_txt: str):
     if preco_txt is None:
         return None
-    s = str(preco_txt).strip()
+    s = str(preco_txt).strip().replace("R$", "").strip()
     if not s:
         return None
-    s = s.replace("R$", "").strip()
+    # PT-BR: 9.309,0000 -> 9309.0000
     s = s.replace(".", "").replace(",", ".")
     try:
         return float(s)
@@ -192,74 +150,194 @@ def preco_txt_to_float(preco_txt: str) -> float | None:
         return None
 
 
-def float_to_preco_txt(x: float | None, decimals: int = 2) -> str:
-    if x is None:
+def float_to_preco_txt(v, decimals: int = 2) -> str:
+    if v is None:
         return ""
-    s = f"{x:.{decimals}f}"
-    return s.replace(".", ",")
+    try:
+        v = float(v)
+    except Exception:
+        return ""
+    fmt = f"{{:,.{decimals}f}}".format(v)
+    fmt = fmt.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {fmt}"
 
 
-def coeficiente_variacao(vals: list[float]) -> float | None:
+def _safe_float(x):
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+def _fmt_num_cond(v: float | None) -> str:
+    """
+    Requisito: se valor >= 1, usar 2 casas; se < 1, usar 4 casas.
+    (Para exibição em memória de cálculo / manual.)
+    """
+    if v is None:
+        return ""
+    try:
+        v = float(v)
+    except Exception:
+        return ""
+    decimals = 2 if abs(v) >= 1 else 4
+    return f"{v:.{decimals}f}"
+
+
+def _fmt_brl_cond(v: float | None) -> str:
+    """BRL com 2 casas quando >=1, 4 casas quando <1."""
+    if v is None:
+        return ""
+    try:
+        v = float(v)
+    except Exception:
+        return ""
+    decimals = 2 if abs(v) >= 1 else 4
+    return float_to_preco_txt(v, decimals=decimals)
+
+
+def parse_row_fields(line: str) -> dict | None:
+    """
+    Parser robusto da linha:
+    ... Nº Inciso .... Quantidade Preço Data Compõe
+
+    Estratégia:
+    - Tokeniza por espaço
+    - Procura a DATA de trás pra frente
+    - Compõe é o token logo após a data (se existir)
+    - Preço é o token anterior à data (ou pode ser "R$" + valor)
+    - Quantidade é o token anterior ao preço
+    """
+    s = normalize_text(line)
+    parts = s.split(" ")
+    if len(parts) < 6:
+        return None
+
+    if not parts[0].isdigit():
+        return None
+
+    num = parts[0]
+    inciso = parts[1].upper()
+
+    # achar data (de trás pra frente)
+    date_idx = None
+    for i in range(len(parts) - 1, -1, -1):
+        if RE_DATE_TOKEN.fullmatch(parts[i]):
+            date_idx = i
+            break
+    if date_idx is None:
+        return None
+
+    data_token = parts[date_idx]
+
+    compoe_token = ""
+    if date_idx + 1 < len(parts):
+        compoe_token = parts[date_idx + 1]
+
+    # normaliza Compõe para "Sim"/"Não" quando possível
+    comp_norm = clean_spaces(compoe_token).strip().lower().strip(".")
+    if comp_norm in ("sim", "s"):
+        compoe_token = "Sim"
+    elif comp_norm in ("nao", "não", "n"):
+        compoe_token = "Não"
+
+    # preço pode vir como "R$ 1.234,56" (dois tokens) ou "1.234,56" (um token) ou "R$1.234,56"
+    # vamos pegar token imediatamente antes da data
+    if date_idx - 1 < 0:
+        return None
+
+    preco_token = parts[date_idx - 1]
+    if preco_token.upper() == "R$" and date_idx - 2 >= 0:
+        preco_token = parts[date_idx - 2]
+        # nesse caso quantidade fica um antes
+        qtd_idx = date_idx - 3
+    else:
+        # se veio "R$1.234,56"
+        if preco_token.upper().startswith("R$"):
+            preco_token = preco_token.replace("R$", "").strip()
+        qtd_idx = date_idx - 2
+
+    if qtd_idx < 0:
+        qtd = None
+    else:
+        qtd_token = parts[qtd_idx]
+        try:
+            qtd = float(qtd_token.replace(".", "").replace(",", "."))
+        except Exception:
+            qtd = None
+
+    try:
+        num_int = int(num)
+    except Exception:
+        return None
+
+    return {
+        "Nº": num_int,
+        "Inciso": inciso,
+        "Quantidade": qtd,
+        "Preço unitário": preco_token,
+        "Data": data_token,
+        "Compõe": compoe_token,
+    }
+
+
+# =========================================================
+# Estatística / Regras de exclusão
+# =========================================================
+
+def media_sem_o_valor(vals: list[float], idx: int):
+    if not vals or idx < 0 or idx >= len(vals):
+        return None
+    others = vals[:idx] + vals[idx + 1 :]
+    if not others:
+        return None
+    return sum(others) / len(others)
+
+
+def coeficiente_variacao(vals: list[float]):
     if not vals:
         return None
     mean = sum(vals) / len(vals)
     if mean == 0:
         return None
-    var = sum((v - mean) ** 2 for v in vals) / len(vals)  # ddof=0
+    var = sum((v - mean) ** 2 for v in vals) / len(vals)
     std = var ** 0.5
     return std / mean
 
 
-def media_sem_o_valor(vals: list[float], idx: int) -> float | None:
-    if len(vals) <= 1:
-        return None
-    s = sum(vals) - vals[idx]
-    return s / (len(vals) - 1)
-
-
 def filtrar_outliers_por_ratio(vals: list[float], upper: float = 1.25, lower: float = 0.75):
-    """
-    Retorna:
-      - vals_final: lista final após filtros
-      - excluidos_alto: quantos foram removidos por excessivamente elevados
-      - excluidos_baixo: quantos foram removidos por inexequíveis
-    Regras:
-      - alto: remove se (v / média(outros)) > upper
-      - baixo: após remover altos, remove se (v / média(outros)) < lower
-    """
-    if len(vals) < 2:
-        return vals[:], 0, 0
+    if len(vals) < 5:
+        return vals, 0, 0
 
-    # PASSO alto
     keep_alto = []
     excl_alto = 0
+
     for i, v in enumerate(vals):
         m = media_sem_o_valor(vals, i)
         if m is None or m == 0:
             keep_alto.append(v)
             continue
         ratio = v / m
-        if ratio <= upper:
-            keep_alto.append(v)
-        else:
+        if ratio > upper:
             excl_alto += 1
+        else:
+            keep_alto.append(v)
 
-    if len(keep_alto) < 2:
-        return keep_alto, excl_alto, 0
-
-    # PASSO baixo
     keep_baixo = []
     excl_baixo = 0
+
     for i, v in enumerate(keep_alto):
         m = media_sem_o_valor(keep_alto, i)
         if m is None or m == 0:
             keep_baixo.append(v)
             continue
         ratio = v / m
-        if ratio >= lower:
-            keep_baixo.append(v)
-        else:
+        if ratio < lower:
             excl_baixo += 1
+        else:
+            keep_baixo.append(v)
 
     return keep_baixo, excl_alto, excl_baixo
 
@@ -298,21 +376,12 @@ def _cv(vals: list[float]) -> float | None:
     return s / m
 
 
-def _safe_float(x) -> float | None:
-    try:
-        if x is None:
-            return None
-        return float(x)
-    except Exception:
-        return None
+# =========================================================
+# Relatório por item (Preview, Excel, PDFs)
+# =========================================================
 
-
-def build_itens_relatorio(
-    df: pd.DataFrame,
-    payload: dict | None = None,
-) -> list[dict]:
-    """Constrói um relatório por item, usado no Preview, Excel e PDFs.
-
+def build_itens_relatorio(df: pd.DataFrame, payload: dict | None = None) -> list[dict]:
+    """
     payload (opcional) pode conter:
       - last_quotes: {"Item 1": 123.45, ...}
       - manual_overrides: {
@@ -324,7 +393,8 @@ def build_itens_relatorio(
             }, ...
         }
 
-    IMPORTANTE: included_indices são índices relativos à lista 'valores_brutos' retornada no preview.
+    OBS: included_indices são índices relativos à lista 'valores_brutos' (que é retornada no preview).
+    Nesta versão, 'valores_brutos' está ORDENADA (crescente) e 'fontes_brutas' alinhada.
     """
     payload = payload or {}
     last_quotes = payload.get("last_quotes") or {}
@@ -336,77 +406,79 @@ def build_itens_relatorio(
     if "Preço unitário" not in df.columns:
         raise ValueError("Coluna 'Preço unitário' não encontrada no dataframe.")
 
-    df_calc = df.copy()
-    df_calc["preco_num"] = df_calc["Preço unitário"].apply(preco_txt_to_float)
-
     itens: list[dict] = []
 
     for item, g_raw in df.groupby("Item", sort=False):
-        catmat = g_raw["CATMAT"].dropna().iloc[0] if ("CATMAT" in g_raw.columns and g_raw["CATMAT"].notna().any()) else ""
-
-        # valores brutos (numéricos) e fonte (alinhados) na ordem das linhas
-        # Observação: índices do override manual se referem a essa lista numérica filtrada.
-        valores_brutos: list[float] = []
-        fontes_brutos: list[str] = []
-        for _, row in g_raw.iterrows():
-            fv = _safe_float(preco_txt_to_float(row.get("Preço unitário")))
-            if fv is None:
-                continue
-            valores_brutos.append(float(fv))
-            fontes_brutos.append(str(row.get("Fonte") or ""))
+        catmat = ""
+        if "CATMAT" in g_raw.columns and g_raw["CATMAT"].notna().any():
+            catmat = str(g_raw["CATMAT"].dropna().iloc[0])
 
         n_bruto = int(len(g_raw))
 
-        # --------- cálculo automático (base atual)
+        # Monta lista numérica + fonte por linha
+        pairs = []
+        for _, row in g_raw.iterrows():
+            v = preco_txt_to_float(row.get("Preço unitário"))
+            if v is None:
+                continue
+            fonte = str(row.get("Fonte") or "")
+            pairs.append((float(v), fonte))
+
+        # Ordena por valor (crescente) para facilitar análise e para bater com UI
+        pairs.sort(key=lambda x: x[0])
+
+        valores_brutos = [p[0] for p in pairs]
+        fontes_brutas = [p[1] for p in pairs]
+
+        # --------- cálculo automático
         excl_alto = 0
         excl_baixo = 0
-        n_final = 0
-        cv_final = None
         metodo_auto = ""
         valor_auto = None
         valores_finais_auto: list[float] = []
+        cv_auto = None
 
         if len(valores_brutos) == 0:
-            # sem valores numéricos
             metodo_auto = ""
             valor_auto = None
             valores_finais_auto = []
-            n_final = 0
-            cv_final = None
+            cv_auto = None
         elif len(valores_brutos) == 1:
             metodo_auto = "Valor único"
             valor_auto = valores_brutos[0]
             valores_finais_auto = valores_brutos[:]
-            n_final = 1
-            cv_final = None
+            cv_auto = None
         elif len(valores_brutos) < 5:
-            cv = _cv(valores_brutos)
-            mean = _mean(valores_brutos)
-            med = _median(valores_brutos)
-            if cv is None:
+            cvv = _cv(valores_brutos)
+            meanv = _mean(valores_brutos)
+            medv = _median(valores_brutos)
+            if cvv is None:
                 metodo_auto = "Mediana"
-                valor_auto = med
+                valor_auto = medv
             else:
-                if cv < 0.25:
+                if cvv < 0.25:
                     metodo_auto = "Média"
-                    valor_auto = mean
+                    valor_auto = meanv
                 else:
                     metodo_auto = "Mediana"
-                    valor_auto = med
+                    valor_auto = medv
             valores_finais_auto = valores_brutos[:]
-            n_final = len(valores_finais_auto)
-            cv_final = cv
+            cv_auto = cvv
         else:
             vals_filtrados, excl_alto, excl_baixo = filtrar_outliers_por_ratio(valores_brutos, upper=1.25, lower=0.75)
             valores_finais_auto = vals_filtrados[:]
-            n_final = len(valores_finais_auto)
-            valor_auto = _mean(valores_finais_auto) if n_final > 0 else None
+            valor_auto = _mean(valores_finais_auto) if valores_finais_auto else None
             metodo_auto = "Média"
-            cv_final = _cv(valores_finais_auto) if n_final > 0 else None
+            cv_auto = _cv(valores_finais_auto) if valores_finais_auto else None
 
         # --------- último licitado
         last_quote_val = last_quotes.get(item)
         last_quote = _safe_float(last_quote_val)
+
+        # --------- regra nova: permitir ajuste quando valor_auto <= 1,2 * last_quote
+        allow_manual = False
+        if last_quote is not None and valor_auto is not None and last_quote > 0:
+            allow_manual = (valor_auto <= 1.2 * last_quote)
 
         # --------- decisão final (auto vs manual)
         modo = "Auto"
@@ -415,28 +487,23 @@ def build_itens_relatorio(
         valores_finais = valores_finais_auto[:]
         manual_info = None
 
-        # Só aceita override manual quando o valor calculado estiver até 20% acima do último licitado
-        # (i.e., valor_auto <= 1.2 * last_quote)
-        allow_manual = (
-            last_quote is not None
-            and last_quote > 0
-            and valor_auto is not None
-            and valor_auto <= (1.2 * last_quote)
-        )
-
         ov = manual_overrides.get(item) if isinstance(manual_overrides, dict) else None
         if allow_manual and isinstance(ov, dict):
             included_indices = ov.get("included_indices")
             method = (ov.get("method") or "media").lower()
+
             if isinstance(included_indices, list) and len(included_indices) > 0:
-                # included_indices referem-se à lista de valores_brutos (numéricos) do preview.
                 sel = []
+                sel_fontes = []
                 for idx in included_indices:
                     if isinstance(idx, int) and 0 <= idx < len(valores_brutos):
                         sel.append(valores_brutos[idx])
+                        sel_fontes.append(fontes_brutas[idx])
+
                 if len(sel) > 0:
                     modo = "Manual"
                     valores_finais = sel
+
                     if method in ("mediana", "median"):
                         metodo_final = "Mediana"
                         valor_final = _median(sel)
@@ -455,6 +522,8 @@ def build_itens_relatorio(
                         "justificativa_codigo": ov.get("justificativa_codigo") or "",
                         "justificativa_texto": ov.get("justificativa_texto") or "",
                     }
+        elif allow_manual and not (isinstance(ov, dict) and ov):
+            modo = "Pendente"
 
         # comparação
         comparacao = ""
@@ -476,14 +545,14 @@ def build_itens_relatorio(
                 "catmat": catmat,
                 "n_bruto": n_bruto,
                 "n_brutos_numericos": int(len(valores_brutos)),
-                "valores_brutos": valores_brutos,
-                "fontes_brutos": fontes_brutos,
+                "valores_brutos": valores_brutos,          # ordenados
+                "fontes_brutas": fontes_brutas,            # alinhados
                 "valor_auto": valor_auto,
                 "metodo_auto": metodo_auto,
                 "n_final_auto": int(len(valores_finais_auto)),
                 "excl_altos": int(excl_alto),
                 "excl_baixos": int(excl_baixo),
-                "cv_auto": cv_final,
+                "cv_auto": cv_auto,
                 "valores_finais_auto": valores_finais_auto,
                 "allow_manual": bool(allow_manual),
                 "modo_final": modo,
@@ -501,6 +570,10 @@ def build_itens_relatorio(
 
     return itens
 
+
+# =========================================================
+# Resumo + Excel
+# =========================================================
 
 def gerar_resumo(df: pd.DataFrame) -> pd.DataFrame:
     cols = [
@@ -527,7 +600,7 @@ def gerar_resumo(df: pd.DataFrame) -> pd.DataFrame:
 
     rows = []
     for item, g in df_calc.groupby("Item", sort=False):
-        catmat = g["CATMAT"].dropna().iloc[0] if g["CATMAT"].notna().any() else ""
+        catmat = g["CATMAT"].dropna().iloc[0] if ("CATMAT" in g.columns and g["CATMAT"].notna().any()) else ""
         vals = g["preco_num"].astype(float).tolist()
         n_inicial = len(vals)
 
@@ -535,23 +608,23 @@ def gerar_resumo(df: pd.DataFrame) -> pd.DataFrame:
         excl_baixo = 0
 
         if n_inicial < 5:
-            cv = coeficiente_variacao(vals)
-            mean = sum(vals) / len(vals) if vals else None
-            med = float(pd.Series(vals).median()) if vals else None
+            cvv = coeficiente_variacao(vals)
+            meanv = sum(vals) / len(vals) if vals else None
+            medv = float(pd.Series(vals).median()) if vals else None
 
-            if cv is None:
+            if cvv is None:
                 escolhido = "Mediana"
-                valor = med
+                valor = medv
             else:
-                if cv < 0.25:
+                if cvv < 0.25:
                     escolhido = "Média"
-                    valor = mean
+                    valor = meanv
                 else:
                     escolhido = "Mediana"
-                    valor = med
+                    valor = medv
 
             n_final = n_inicial
-            cv_final = cv
+            cv_final = cvv
 
         else:
             vals_filtrados, excl_alto, excl_baixo = filtrar_outliers_por_ratio(vals, upper=1.25, lower=0.75)
@@ -578,7 +651,8 @@ def gerar_resumo(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_excel_bytes(df: pd.DataFrame, itens_relatorio: list[dict]) -> bytes:
-    """Gera Excel (bytes) com:
+    """
+    Gera Excel (bytes) com:
     - Dados (linhas Compõe=Sim)
     - Resumo (cálculo automático atual)
     - Prévia (tabela comparativa + último licitado + modo final)
@@ -587,6 +661,13 @@ def build_excel_bytes(df: pd.DataFrame, itens_relatorio: list[dict]) -> bytes:
 
     preview_rows = []
     for it in itens_relatorio:
+        valor_auto = _safe_float(it.get("valor_auto"))
+        lastq = _safe_float(it.get("last_quote"))
+        valor_final = _safe_float(it.get("valor_final"))
+
+        diff_abs = (valor_final - lastq) if (valor_final is not None and lastq is not None) else None
+        diff_pct = ((diff_abs / lastq) * 100.0) if (diff_abs is not None and lastq not in (None, 0)) else None
+
         preview_rows.append(
             {
                 "Item": it.get("item"),
@@ -595,30 +676,18 @@ def build_excel_bytes(df: pd.DataFrame, itens_relatorio: list[dict]) -> bytes:
                 "Número de entradas finais": it.get("n_final_auto"),
                 "Nº desconsiderados (Excessivamente Elevados)": it.get("excl_altos"),
                 "Nº desconsiderados (Inexequíveis)": it.get("excl_baixos"),
-                "Valor calculado (R$)": float_to_preco_txt(_safe_float(it.get("valor_auto")), decimals=2),
-                "Último licitado (R$)": float_to_preco_txt(_safe_float(it.get("last_quote")), decimals=2),
+                "Valor calculado (R$)": float_to_preco_txt(valor_auto, decimals=2),
+                "Último licitado (R$)": float_to_preco_txt(lastq, decimals=2),
                 "Modo final": it.get("modo_final"),
                 "Método final": it.get("metodo_final"),
-                "Valor final adotado (R$)": float_to_preco_txt(_safe_float(it.get("valor_final")), decimals=2),
-                "Diferença vs último (R$)": float_to_preco_txt(
-                    (_safe_float(it.get("valor_final")) - _safe_float(it.get("last_quote")))
-                    if (_safe_float(it.get("valor_final")) is not None and _safe_float(it.get("last_quote")) is not None)
-                    else None,
-                    decimals=2,
-                ),
-                "Diferença vs último (%)": (
-                    f"{(((_safe_float(it.get('valor_final')) - _safe_float(it.get('last_quote'))) / _safe_float(it.get('last_quote'))) * 100.0):.2f}%".replace(".", ",")
-                    if (_safe_float(it.get("valor_final")) is not None and _safe_float(it.get("last_quote")) not in (None, 0))
-                    else ""
-                ),
+                "Valor final adotado (R$)": float_to_preco_txt(valor_final, decimals=2),
+                "Diferença vs último (R$)": float_to_preco_txt(diff_abs, decimals=2),
+                "Diferença vs último (%)": (f"{diff_pct:.2f}%".replace(".", ",") if diff_pct is not None else ""),
             }
         )
 
     df_preview = pd.DataFrame(preview_rows)
 
-    # IMPORTANTE:
-    # Não use `df or ...` com DataFrame, pois o pandas não permite avaliar DataFrame
-    # como booleano ("truth value is ambiguous"). Isso quebrava o /api/generate.
     df_to_write = df if df is not None else pd.DataFrame()
 
     excel_out = io.BytesIO()
@@ -631,7 +700,14 @@ def build_excel_bytes(df: pd.DataFrame, itens_relatorio: list[dict]) -> bytes:
     return excel_out.read()
 
 
+# =========================================================
+# Parser do PDF (extração)
+# =========================================================
+
 def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list[dict]]:
+    # ✅ valida o tipo do relatório antes de qualquer parsing
+    _detect_report_type_or_raise(pdf_bytes)
+
     records: list[dict] = []
     debug_records: list[dict] = []
 
@@ -720,8 +796,6 @@ def process_pdf_bytes_debug(pdf_bytes: bytes) -> tuple[pd.DataFrame, list[dict]]
 
 def process_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
     df, _ = process_pdf_bytes_debug(pdf_bytes)
-
-    # (opcional) gerar resumo aqui se você quiser no parse.py; mas deixo só o DF "Dados"
     return df
 
 
@@ -732,7 +806,7 @@ def validate_extraction(df: pd.DataFrame) -> dict:
 def debug_dump(df: pd.DataFrame, debug_records: list[dict], max_rows: int = 200) -> str:
     out = []
     out.append("=" * 120)
-    out.append("DEBUG DUMP — REGISTROS EXTRAÍDOS (sem coluna Nome; com Fonte)")
+    out.append("DEBUG DUMP — REGISTROS EXTRAÍDOS (com Fonte)")
     out.append("=" * 120)
 
     for i, r in enumerate(debug_records[:max_rows], start=1):
@@ -750,25 +824,9 @@ def debug_dump(df: pd.DataFrame, debug_records: list[dict], max_rows: int = 200)
     return "\n".join(out)
 
 
-
-
-# ===============================
-# Memoria de Calculo (PDF)
-# ===============================
-
-def _preco_txt_to_float_for_memoria(preco_txt: str):
-    if preco_txt is None:
-        return None
-    s = str(preco_txt).strip().replace("R$", "").strip()
-    if not s:
-        return None
-    # PT-BR: 9.309,0000 -> 9309.0000
-    s = s.replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-    except Exception:
-        return None
-
+# =========================================================
+# Memória de Cálculo (PDF)
+# =========================================================
 
 def _coef_var(vals):
     if not vals:
@@ -782,7 +840,7 @@ def _coef_var(vals):
 
 
 def _audit_item(vals, upper=1.25, lower=0.75):
-    """Replica o padrao do /api/debug para um unico item."""
+    """Replica o padrão do debug para um único item."""
     altos = []
     keep_alto = []
     for i, v in enumerate(vals):
@@ -816,16 +874,14 @@ def _audit_item(vals, upper=1.25, lower=0.75):
 
 
 def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> str:
-    """Gera um relatorio TXT (monoespacado) com o passo a passo dos calculos para TODOS os itens.
-
-    Observacao: o texto inclui marcadores simples para estilos no PDF:
-      - <<TITLE>>...<<ENDTITLE>> : titulo (fonte maior, negrito)
+    """
+    Texto da memória (com marcadores):
+      - <<TITLE>>...<<ENDTITLE>> : título (fonte maior, negrito)
       - <<B>>...<<ENDB>>         : negrito
       - <<LINK|URL>>...<<ENDLINK>> : hyperlink
     """
     if df is None or getattr(df, "empty", True):
         return "DF vazio. Nenhuma linha encontrada.\n"
-
 
     required = {"Item", "Preço unitário"}
     missing = [c for c in required if c not in df.columns]
@@ -833,32 +889,21 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
         return f"Colunas esperadas ausentes: {missing}. Colunas encontradas: {list(df.columns)}\n"
 
     def _split_lines(s: str) -> list[str]:
-        # "||" significa quebra de linha (conforme solicitado)
         parts = [p.strip() for p in (s or "").split("||")]
         return [p for p in parts if p != ""]
 
-    # helper para CV como percentual PT-BR (duas casas)
     def _cv_pct_txt(cv: float | None) -> str:
         if cv is None:
             return ""
         pct = cv * 100.0
-        # duas casas e virgula
         s = f"{pct:.2f}".replace(".", ",")
         return f"{s}%"
 
-    # formatação dinâmica: >= 1 -> 2 casas; < 1 -> 4 casas
-    def _num_dyn(v: float | None) -> str:
-        if v is None:
-            return ""
-        dec = 2 if abs(v) >= 1 else 4
-        return f"{v:.{dec}f}"
-
-    out: list[str] = []
-
     payload = payload or {}
-    # Mapa com informação do front (último licitado / ajustes manuais)
     relatorio = build_itens_relatorio(df, payload=payload) if df is not None else []
     rel_map = {str(r.get("item")): r for r in relatorio}
+
+    out: list[str] = []
 
     def _append_last_and_final(item_key: str):
         r = rel_map.get(item_key)
@@ -879,33 +924,33 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
         if r.get("modo_final") != "Manual":
             return
         manual = r.get("manual") or {}
-        # Bloco manual
+
         out.append("<<B>>ANÁLISE MANUAL<<ENDB>>")
-        out.append("Valores brutos (numéricos) disponíveis:")
+        out.append("Valores brutos (numéricos) disponíveis (ordenados):")
         vals = r.get("valores_brutos") or []
-        fontes = r.get("fontes_brutos") or []
-        for i, v in enumerate(vals):
-            fonte = fontes[i] if i < len(fontes) else ""
-            out.append(f"[{i+1}] {_num_dyn(v)} | Fonte: {fonte}")
+        fontes = r.get("fontes_brutas") or []
+
+        # índice 1-based
+        for i, v in enumerate(vals, start=1):
+            fonte = fontes[i - 1] if (i - 1) < len(fontes) else ""
+            out.append(f"[{i}] { _fmt_num_cond(v) } | Fonte: {fonte}")
+
         out.append("")
         inc = manual.get("included_indices") or []
-        inc_1 = []
-        for x in inc:
-            try:
-                inc_1.append(int(x) + 1)
-            except Exception:
-                pass
-        out.append(f"Índices incluídos: {inc_1}")
+        # indices são 0-based internamente; exibir 1-based
+        inc_1b = [(i + 1) for i in inc if isinstance(i, int)]
+        out.append(f"Índices incluídos: {inc_1b}")
         out.append(f"Quantidade excluída manualmente: {manual.get('excluded_count', '')}")
         out.append(f"Método escolhido: {manual.get('method', '')}")
 
-        mean = _safe_float(manual.get("mean"))
-        median = _safe_float(manual.get("median"))
+        meanv = _safe_float(manual.get("mean"))
+        medianv = _safe_float(manual.get("median"))
         cvv = _safe_float(manual.get("cv"))
-        out.append(f"Média (dos incluídos): {_num_dyn(mean)}" if mean is not None else "Média (dos incluídos):")
-        out.append(f"Mediana (dos incluídos): {_num_dyn(median)}" if median is not None else "Mediana (dos incluídos):")
+
+        out.append(f"Média (dos incluídos): {_fmt_num_cond(meanv) if meanv is not None else ''}")
+        out.append(f"Mediana (dos incluídos): {_fmt_num_cond(medianv) if medianv is not None else ''}")
         out.append(f"Coeficiente de Variação (dos incluídos): {_cv_pct_txt(cvv)}")
-        out.append(f"Valor Final (manual): {float_to_preco_txt(_safe_float(manual.get('valor_final')), decimals=2)}")
+        out.append(f"Valor Final (manual): {_fmt_brl_cond(_safe_float(manual.get('valor_final')))}")
 
         just_code = (manual.get("justificativa_codigo") or "").strip()
         just_txt = (manual.get("justificativa_texto") or "").strip()
@@ -915,12 +960,11 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
             out.append(f"Justificativa (texto): {just_txt}")
         out.append("")
 
-    # Titulo (duas linhas) com fonte maior
+    # Cabeçalho / metodologia (conforme sua memória)
     out.append("<<TITLE>>MEMÓRIA DE CÁLCULO - TABELA COMPARATIVA DE VALORES<<ENDTITLE>>")
     out.append("<<TITLE>>UPDE - HUSM - UFSM<<ENDTITLE>>")
     out.append("")
 
-    # Metodologia com hyperlink
     out.append(
         "<<LINK|https://www.stj.jus.br/publicacaoinstitucional/index.php/MOP/issue/view/2096/showToc>>"
         "Metodologias de exclusão adotadas conforme Manual de Orientação: Pesquisa de Preços - 4ª edição, do Superior Tribunal de Justiça"
@@ -940,19 +984,17 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
     out.extend(_split_lines(regras))
     out.append("")
 
+    # Por item
     for item, g_raw in df.groupby("Item", sort=False):
         out.append(f"<<B>>{'_' * 50}<<ENDB>>")
         out.append(f"<<B>>{str(item)}<<ENDB>>")
+        out.append(f"Amostrar Iniciais: {len(g_raw)}")
 
-        g = g_raw.copy()
-        g["preco_num"] = g["Preço unitário"].apply(_preco_txt_to_float_for_memoria)
-        vals = g["preco_num"].dropna().astype(float).tolist()
+        # valores numéricos já ordenados (do relatorio)
+        r = rel_map.get(str(item))
+        vals = (r.get("valores_brutos") if r else []) or []
 
-        n_bruto = len(g_raw)
-        n_parse = len(vals)
-        out.append(f"Amostrar Iniciais: {n_bruto}")
-
-        if n_parse == 0:
+        if len(vals) == 0:
             out.append("Nenhum valor conseguiu ser convertido para número.")
             out.append('Valores originais da coluna "Preço Unitário" (primeiros 50):')
             out.append(", ".join([str(x) for x in g_raw["Preço unitário"].tolist()[:50]]))
@@ -961,9 +1003,8 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
             _append_manual_section(str(item))
             continue
 
-        # Caso com poucos valores
-        if n_parse == 1:
-            out.append(f"Valor único: {_num_dyn(vals[0])}")
+        if len(vals) == 1:
+            out.append(f"Valor único: {_fmt_num_cond(vals[0])}")
             out.append("Preço Final Escolhido: Valor único.")
             out.append(f"Valor escolhido: {float_to_preco_txt(vals[0], decimals=2)}")
             out.append("")
@@ -971,92 +1012,86 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
             _append_manual_section(str(item))
             continue
 
-        # N < 5 -> CV decide
-        if n_parse < 5:
-            cv = _coef_var(vals)
-            mean = sum(vals) / len(vals)
-            med = float(pd.Series(vals).median())
-            out.append("Valores Iniciais considerados no cálculo:")
-            out.append(", ".join([_num_dyn(v) for v in vals]))
-            out.append("")
-            out.append(f"Média: {_num_dyn(mean)}")
-            out.append(f"Mediana: {_num_dyn(med)}")
-            out.append(f"CV: {_cv_pct_txt(cv)}")
+        if len(vals) < 5:
+            cvv = _coef_var(vals)
+            meanv = _mean(vals)
+            medv = _median(vals)
 
-            if cv is None:
+            out.append("Valores Iniciais considerados no cálculo:")
+            # índice 1-based
+            for i, v in enumerate(vals, start=1):
+                out.append(f"[{i}] {_fmt_num_cond(v)}")
+            out.append("")
+
+            out.append(f"Média: {_fmt_num_cond(meanv)}")
+            out.append(f"Mediana: {_fmt_num_cond(medv)}")
+            out.append(f"CV: {_cv_pct_txt(cvv)}")
+
+            if cvv is None:
                 escolhido = "Mediana"
-                valor = med
+                valor = medv
                 motivo = "CV indefinido (média=0)"
-            elif cv < 0.25:
+            elif cvv < 0.25:
                 escolhido = "Média"
-                valor = mean
+                valor = meanv
                 motivo = "CV < 0,25"
             else:
                 escolhido = "Mediana"
-                valor = med
+                valor = medv
                 motivo = "CV >= 0,25"
 
             out.append(f"Decisão: {escolhido} ({motivo})")
-            out.append(f"Valor Final: {float_to_preco_txt(valor, decimals=2)}")
+            out.append(f"Valor Final: {_fmt_brl_cond(valor)}")
             out.append("")
             _append_last_and_final(str(item))
             _append_manual_section(str(item))
             continue
 
-        # N >= 5 -> filtro e media
         rep = _audit_item(vals, upper=1.25, lower=0.75)
 
         out.append("Valores Iniciais considerados no cálculo:")
-        out.append(", ".join([_num_dyn(v) for v in rep["iniciais"]]))
+        for i, v in enumerate(rep["iniciais"], start=1):
+            out.append(f"[{i}] {_fmt_num_cond(v)}")
         out.append("")
 
         out.append("--- Preços exclúidos por serem Excessivamente Elevados ---")
         out.append(f"Quantidade: {len(rep['excluidos_altos'])}")
-        for r in rep["excluidos_altos"]:
+        for r2 in rep["excluidos_altos"]:
             out.append(
-                f"Valor={_num_dyn(r['v'])} | Média dos demais={_num_dyn(r['m_outros'])} | Proporção={r['ratio']:.4f}"
+                f"Valor={_fmt_num_cond(r2['v'])} | Média dos demais={_fmt_num_cond(r2['m_outros'])} | Proporção={r2['ratio']:.4f}"
             )
         out.append("")
 
         out.append("Mantidos após exclusão dos Excessivamente Elevados:")
-        out.append(", ".join([_num_dyn(v) for v in rep["apos_alto"]]))
+        out.append(", ".join([_fmt_num_cond(v) for v in rep["apos_alto"]]))
         out.append("")
 
         out.append("--- Preços exclúidos por serem Inexequíveis ---")
         out.append(f"Quantidade: {len(rep['excluidos_baixos'])}")
-        for r in rep["excluidos_baixos"]:
+        for r2 in rep["excluidos_baixos"]:
             out.append(
-                f"Valor={_num_dyn(r['v'])} | Média dos demais={_num_dyn(r['m_outros'])} | Proporção={r['ratio']:.4f}"
+                f"Valor={_fmt_num_cond(r2['v'])} | Média dos demais={_fmt_num_cond(r2['m_outros'])} | Proporção={r2['ratio']:.4f}"
             )
         out.append("")
 
         out.append("Valores considerados no cálculo final:")
-        out.append(", ".join([_num_dyn(v) for v in rep["finais"]]))
+        out.append(", ".join([_fmt_num_cond(v) for v in rep["finais"]]))
         out.append(f"Número de valores considerados no cálculo final: {len(rep['finais'])}")
-        media_txt = "" if rep["media_final"] is None else _num_dyn(rep["media_final"])
-        out.append(f"Média final: {media_txt}")
-        out.append(f"Coeficiente de Variação final: {_cv_pct_txt(rep['cv_final'])}")
-
-        valor2 = rep["media_final"]
+        out.append(f"Média final: {_fmt_num_cond(_safe_float(rep['media_final']))}")
+        out.append(f"Coeficiente de Variação final: {_cv_pct_txt(_safe_float(rep['cv_final']))}")
         out.append("Decisão Final: Média")
-        val_txt = float_to_preco_txt(valor2, decimals=2) if valor2 is not None else ""
-        out.append(f"Valor Final: {val_txt}")
+        out.append(f"Valor Final: {_fmt_brl_cond(_safe_float(rep['media_final']))}")
         out.append("")
-
         _append_last_and_final(str(item))
         _append_manual_section(str(item))
 
     return "\n".join(out) + "\n"
 
 
-
 def _text_to_pdf_bytes(text: str) -> bytes:
-    """Renderiza o TXT (com marcadores simples) em PDF com quebra de pagina.
-
-    Marcadores aceitos:
-      - <<TITLE>>...<<ENDTITLE>>      : titulo (fonte maior, negrito)
-      - <<B>>...<<ENDB>>              : negrito
-      - <<LINK|URL>>...<<ENDLINK>>    : hyperlink
+    """
+    Renderiza o TXT (com marcadores simples) em PDF com quebra de página.
+    Mantém aparência geral (Courier), com título maior e negrito.
     """
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -1077,11 +1112,8 @@ def _text_to_pdf_bytes(text: str) -> bytes:
     title_line_height = 16
 
     c.setFont(font_name, font_size)
-
     y = height - top
 
-    # Heuristica de quebra de linha por largura
-    # Courier ~ monoespacado: estimativa de caracteres por linha
     avg_char_w = c.stringWidth("M", font_name, font_size)
     max_chars = max(20, int(usable_width // avg_char_w))
 
@@ -1100,7 +1132,6 @@ def _text_to_pdf_bytes(text: str) -> bytes:
 
         if link_url:
             w = c.stringWidth(s, curr_font_name, curr_font_size)
-            # retangulo de clique (baseline -> caixa aproximada)
             y0 = y - 2
             y1 = y + curr_font_size + 2
             c.linkURL(link_url, (left, y0, left + w, y1), relative=0)
@@ -1108,13 +1139,11 @@ def _text_to_pdf_bytes(text: str) -> bytes:
         y -= curr_line_height
 
     def _strip_marker(line: str):
-        # retorna (tipo, payload, url)
         if line.startswith("<<TITLE>>") and line.endswith("<<ENDTITLE>>"):
             return ("TITLE", line[len("<<TITLE>>") : -len("<<ENDTITLE>>")], None)
         if line.startswith("<<B>>") and line.endswith("<<ENDB>>"):
             return ("B", line[len("<<B>>") : -len("<<ENDB>>")], None)
         if line.startswith("<<LINK|") and line.endswith("<<ENDLINK>>"):
-            # <<LINK|URL>>texto<<ENDLINK>>
             mid = line.find(">>")
             url = line[len("<<LINK|") : mid]
             payload = line[mid + 2 : -len("<<ENDLINK>>")]
@@ -1162,24 +1191,17 @@ def _text_to_pdf_bytes(text: str) -> bytes:
 
 
 def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = None) -> bytes:
-    """Gera o PDF 'Memoria de Calculo' (bytes) a partir do dataframe final (Compõe=Sim).
-
-    payload pode conter último licitado + ajustes manuais para registrar no PDF.
-    """
     txt = build_memoria_calculo_txt(df, payload=payload)
     return _text_to_pdf_bytes(txt)
 
 
-def _fmt_brl(x: float | None) -> str:
-    if x is None:
-        return ""
-    return float_to_preco_txt(float(x), decimals=2)
-
+# =========================================================
+# PDF: Tabela comparativa
+# =========================================================
 
 def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
-    """Gera o PDF 'Tabela Comparativa de Valores' (bytes).
-
-    A ideia é ser um PDF oficial, com uma tabela clara e repetição de cabeçalho.
+    """
+    Gera o PDF 'Tabela Comparativa de Valores' (bytes).
     """
     buf = io.BytesIO()
 
@@ -1198,37 +1220,32 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
     style_normal = styles["Normal"]
 
     story = []
-    story.append(Paragraph("Tabela Comparativa de Valores — UPDE / HUSM / UFSM", style_title))
+    story.append(Paragraph("TABELA COMPARATIVA DE VALORES — UPDE / HUSM / UFSM", style_title))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Resumo por item (inclui último licitado e modo final quando houver ajuste manual).", style_normal))
     story.append(Spacer(1, 12))
 
-    header = [
+    headers = [
         "Item",
         "Catmat",
         "N iniciais",
         "N finais",
         "Excl. altos",
-        "Excl. baixos",
-        "Valor calculado",
+        "Excl. inexeq.",
+        "Valor calc.",
         "Último licitado",
         "Modo",
         "Método",
         "Valor final",
         "Dif. (R$)",
-        "Dif. (%)",
     ]
 
-    data = [header]
-    for it in itens_relatorio or []:
+    data = [headers]
+    for it in itens_relatorio:
         valor_auto = _safe_float(it.get("valor_auto"))
         lastq = _safe_float(it.get("last_quote"))
         valor_final = _safe_float(it.get("valor_final"))
-
-        diff_abs = None
-        diff_pct = None
-        if valor_final is not None and lastq is not None:
-            diff_abs = valor_final - lastq
-            if lastq != 0:
-                diff_pct = (diff_abs / lastq) * 100.0
+        diff_abs = (valor_final - lastq) if (valor_final is not None and lastq is not None) else None
 
         data.append(
             [
@@ -1238,13 +1255,12 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
                 str(it.get("n_final_auto", "")),
                 str(it.get("excl_altos", "")),
                 str(it.get("excl_baixos", "")),
-                _fmt_brl(valor_auto),
-                _fmt_brl(lastq),
+                float_to_preco_txt(valor_auto, decimals=2),
+                float_to_preco_txt(lastq, decimals=2),
                 str(it.get("modo_final", "")),
                 str(it.get("metodo_final", "")),
-                _fmt_brl(valor_final),
-                _fmt_brl(diff_abs),
-                (f"{diff_pct:.2f}%".replace(".", ",") if diff_pct is not None else ""),
+                float_to_preco_txt(valor_final, decimals=2),
+                float_to_preco_txt(diff_abs, decimals=2),
             ]
         )
 
@@ -1255,7 +1271,6 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, 0), 9),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("FONTSIZE", (0, 1), (-1, -1), 8),
@@ -1269,7 +1284,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
     story.append(Spacer(1, 12))
     story.append(
         Paragraph(
-            "Obs.: Itens em modo 'Pendente' indicam que o último licitado é maior que o valor calculado, mas não houve ajuste manual aplicado.",
+            "Obs.: Itens em modo 'Pendente' indicam que o ajuste manual está liberado, mas não foi aplicado.",
             style_normal,
         )
     )
