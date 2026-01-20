@@ -1,6 +1,7 @@
 import re
 import io
 import json
+import os
 from datetime import datetime
 
 try:
@@ -14,8 +15,10 @@ import pandas as pd
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 
 
 # ===============================
@@ -1227,16 +1230,62 @@ def _fmt_brl(x: float | None) -> str:
 
 
 def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict | None = None) -> bytes:
-    """Gera o PDF 'Tabela Comparativa de Valores' (bytes) com layout solicitado."""
+    """Gera o PDF "Tabela Final de Preços" (bytes) com identidade visual institucional."""
     meta = meta or {}
     numero_lista = str(meta.get("numero_lista") or "").strip()
     nome_lista = str(meta.get("nome_lista") or "").strip()
     processo_sei = str(meta.get("processo_sei") or "").strip()
 
-    # Título (se faltar meta, ainda gera, mas o front valida como obrigatório)
-    title_main = "Tabela Comparativa de Valores"
+    # ---- helpers
+    def _only_item_number(s: str) -> str:
+        if s is None:
+            return ""
+        m = re.search(r"(\d+)", str(s))
+        return m.group(1) if m else str(s)
+
+    def _logo(path: str, max_w: float, max_h: float):
+        try:
+            ir = ImageReader(path)
+            w, h = ir.getSize()
+            if not w or not h:
+                return ""
+            scale = min(max_w / float(w), max_h / float(h))
+            return Image(path, width=float(w) * scale, height=float(h) * scale)
+        except Exception:
+            return ""
+
+    # ---- title/subtitle (CAIXA ALTA + NEGRITO)
+    title_main = "TABELA FINAL DE PREÇOS"
     if numero_lista or nome_lista:
-        title_main = f"Tabela Comparativa de Valores - Lista {numero_lista} | {nome_lista}".strip()
+        title_main = f"TABELA FINAL DE PREÇOS - LISTA {numero_lista} | {nome_lista}".strip()
+
+    subtitle = f"PROCESSO SEI {processo_sei}".strip() if processo_sei else ""
+
+    # ---- datetime (PT-BR, minúsculas)
+    months = [
+        "janeiro",
+        "fevereiro",
+        "março",
+        "abril",
+        "maio",
+        "junho",
+        "julho",
+        "agosto",
+        "setembro",
+        "outubro",
+        "novembro",
+        "dezembro",
+    ]
+    now = None
+    if ZoneInfo is not None:
+        try:
+            now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        except Exception:
+            now = None
+    if now is None:
+        now = datetime.now()
+
+    dt_line = f"relatório gerado em {now.day:02d} de {months[now.month - 1]} de {now.year}, às {now:%H:%M}."
 
     buf = io.BytesIO()
 
@@ -1245,48 +1294,127 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         pagesize=landscape(A4),
         leftMargin=24,
         rightMargin=24,
-        topMargin=24,
-        bottomMargin=24,
-        title="Tabela Comparativa de Valores",
+        topMargin=18,
+        bottomMargin=18,
+        title="Tabela Final de Preços",
     )
 
     styles = getSampleStyleSheet()
-    style_title = styles["Title"]
-    style_normal = styles["Normal"]
+
+    style_title = ParagraphStyle(
+        "title",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        leading=16,
+        alignment=TA_CENTER,
+        spaceAfter=4,
+    )
+    style_sub = ParagraphStyle(
+        "sub",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        leading=13,
+        alignment=TA_CENTER,
+        spaceAfter=8,
+    )
+    style_normal = ParagraphStyle(
+        "normal",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=11,
+        alignment=TA_LEFT,
+    )
+    style_small_center = ParagraphStyle(
+        "small_center",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        alignment=TA_CENTER,
+        textColor=colors.grey,
+    )
+    style_date = ParagraphStyle(
+        "date",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        alignment=TA_RIGHT,
+        textColor=colors.grey,
+    )
+    style_head_cell = ParagraphStyle(
+        "head_cell",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=9,
+        alignment=TA_CENTER,
+    )
 
     story: list = []
+
+    # ---- Cabeçalho com logos
+    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+    husm_path = os.path.join(assets_dir, "husm.png")
+    ebserh_path = os.path.join(assets_dir, "ebserh.png")
+    ufsm_path = os.path.join(assets_dir, "ufsm.png")
+
+    logo_husm = _logo(husm_path, max_w=220, max_h=40)
+    logo_ufsm = _logo(ufsm_path, max_w=180, max_h=45)
+    logo_ebserh = _logo(ebserh_path, max_w=200, max_h=35)
+
+    header_tbl = Table(
+        [[logo_husm, logo_ufsm, logo_ebserh]],
+        colWidths=[250, 290, 250],
+        hAlign="CENTER",
+    )
+    header_tbl.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.grey),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(header_tbl)
+    story.append(Spacer(1, 8))
+
+    # ---- Título e Processo SEI (centralizados, CAIXA ALTA + NEGRITO)
     story.append(Paragraph(title_main, style_title))
-    if processo_sei:
-        story.append(Paragraph(f"Processo SEI {processo_sei}", style_normal))
+    if subtitle:
+        story.append(Paragraph(subtitle, style_sub))
+    else:
+        story.append(Spacer(1, 6))
+
+    # ---- Termo de referência metodológica (curto e formal)
+    story.append(
+        Paragraph(
+            "<b>termo de referência metodológica</b>: a estimativa de preços foi calculada conforme as metodologias de exclusão e cálculo descritas no Manual de Orientação: Pesquisa de Preços (4ª edição) do Superior Tribunal de Justiça (STJ), com detalhamento no documento Memória de Cálculo anexo.",
+            style_normal,
+        )
+    )
     story.append(Spacer(1, 10))
 
-    # Legenda
-    story.append(Paragraph("<b>LEGENDA</b>", style_normal))
-    story.append(Paragraph("A.I. = Amostras Iniciais", style_normal))
-    story.append(Paragraph("A.F. = Amostras Finais", style_normal))
-    story.append(Paragraph("E.E. = Excessivamente Elevados", style_normal))
-    story.append(Paragraph("INEXEQ. = Inexequíveis", style_normal))
-    story.append(Spacer(1, 10))
-
+    # ---- Tabela
     header = [
         "ITEM",
         "CATMAT",
-        "A.I.",
-        "A.F.",
-        "E.E.",
-        "INEXEQ.",
-        "MODO EST.",
+        "AMOSTRAS INICIAIS",
+        "AMOSTRAS FINAIS",
+        "EXCESSIVAMENTE ELEVADOS",
+        "INEXEQUÍVEIS",
+        "MODO ESTIMATIVA",
         "MÉTODO",
         "VALOR ESTIMADO",
     ]
 
-    def _only_item_number(s: str) -> str:
-        if s is None:
-            return ""
-        m = re.search(r"(\d+)", str(s))
-        return m.group(1) if m else str(s)
+    data = [[Paragraph(h, style_head_cell) for h in header]]
 
-    data = [header]
     for it in itens_relatorio or []:
         item_num = _only_item_number(it.get("item", ""))
         catmat = str(it.get("catmat", ""))
@@ -1297,6 +1425,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         modo = str(it.get("modo_final", ""))
         metodo = str(it.get("metodo_final", ""))
         valor_final = _safe_float(it.get("valor_final"))
+
         data.append(
             [
                 item_num,
@@ -1311,52 +1440,65 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
             ]
         )
 
-    t = Table(data, repeatRows=1)
+    # larguras equilibradas p/ caber em paisagem
+    col_widths = [45, 75, 95, 95, 135, 95, 110, 85, 95]
+
+    t = Table(data, repeatRows=1, colWidths=col_widths, hAlign="CENTER")
     t.setStyle(
         TableStyle(
             [
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 9),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("FONTSIZE", (0, 1), (-1, -1), 8),
                 ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
 
     story.append(t)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 14))
 
-    # Rodapé com data/hora de geração (America/Sao_Paulo quando disponível)
-    months = [
-        "JANEIRO",
-        "FEVEREIRO",
-        "MARÇO",
-        "ABRIL",
-        "MAIO",
-        "JUNHO",
-        "JULHO",
-        "AGOSTO",
-        "SETEMBRO",
-        "OUTUBRO",
-        "NOVEMBRO",
-        "DEZEMBRO",
-    ]
-    now = None
-    if ZoneInfo is not None:
-        try:
-            now = datetime.now(ZoneInfo("America/Sao_Paulo"))
-        except Exception:
-            now = None
-    if now is None:
-        now = datetime.now()
+    # ---- Bloco de responsável (campo para assinatura)
+    resp_tbl = Table(
+        [
+            [Paragraph("<b>RESPONSÁVEL</b>", style_normal)],
+            [Paragraph("Nome: _________________________________________________", style_normal)],
+            [Paragraph("Cargo/Setor: __________________________________________", style_normal)],
+            [Paragraph("Assinatura: ___________________________________________", style_normal)],
+        ],
+        colWidths=[sum(col_widths)],
+    )
+    resp_tbl.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.white),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    story.append(resp_tbl)
+    story.append(Spacer(1, 10))
 
-    dt_str = f"{now.day:02d} DE {months[now.month - 1]} DE {now.year}, ÀS {now:%H:%M}."
-    story.append(Paragraph(f"Relatório gerado em {dt_str}", style_normal))
+    # ---- Rodapé institucional + data
+    story.append(
+        Paragraph(
+            "HOSPITAL UNIVERSITÁRIO DE SANTA MARIA • EBSERH • UNIVERSIDADE FEDERAL DE SANTA MARIA",
+            style_small_center,
+        )
+    )
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(dt_line, style_date))
 
     doc.build(story)
     buf.seek(0)
