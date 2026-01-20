@@ -57,8 +57,6 @@ class handler(BaseHTTPRequestHandler):
                         "excl_altos": int(it.get("excl_altos") or 0),
                         "excl_baixos": int(it.get("excl_baixos") or 0),
                         "valor_calculado": it.get("valor_auto"),
-                        # >>> ESSENCIAL PARA O MODAL:
-                        # lista [{idx, valor, fonte}]
                         "brutos": it.get("brutos") or [],
                     }
                 )
