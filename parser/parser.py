@@ -1411,12 +1411,12 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         canv.saveState()
         try:
             # área do cabeçalho
-            y_top = page_h - 20
-            y_line = page_h - 62
+            y_top = page_h - 26
+            y_line = page_h - 78
 
             # Logo combinado centralizado
             if header_ir is not None:
-                w, h = _fit_size(header_ir, max_w=(page_w - _doc.leftMargin - _doc.rightMargin), max_h=42)
+                w, h = _fit_size(header_ir, max_w=(page_w - _doc.leftMargin - _doc.rightMargin), max_h=40)
                 x = (page_w - w) / 2.0
                 canv.drawImage(header_ir, x, y_top - h, width=w, height=h, mask='auto')
             else:
