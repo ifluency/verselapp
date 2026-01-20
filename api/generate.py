@@ -74,7 +74,7 @@ class handler(BaseHTTPRequestHandler):
             zip_out = io.BytesIO()
             with zipfile.ZipFile(zip_out, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("relatorio_precos_compoe_sim.xlsx", xlsx_bytes)
-                zf.writestr("Tabela_Comparativa_de_Valores.pdf", pdf_comp_bytes)
+                zf.writestr("Tabela_Final_de_Precos.pdf", pdf_comp_bytes)
                 zf.writestr("Memoria_de_Calculo.pdf", pdf_memoria_bytes)
 
             zip_out.seek(0)
