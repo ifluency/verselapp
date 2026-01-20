@@ -1252,19 +1252,17 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
 
         Prioridade:
           1) base64 (arquivo parser/logo_b64.py)
-          2) arquivo em parser/assets/<kind>.png
+          2) arquivo em parser/assets/<kind>.jpg/.jpeg/.png
 
         Observação: desenhamos as imagens diretamente no canvas (onFirstPage/onLaterPages),
         pois isso é mais robusto no deploy (Vercel) do que usar imagens como Flowables.
         """
         # 1) base64
         try:
-            from parser.logo_b64 import HUSM_LOGO_JPEG_B64, EBSERH_LOGO_JPEG_B64, UFSM_LOGO_JPEG_B64
+            from parser.logo_b64 import HEADER_LOGO_JPEG_B64
 
             b64_map = {
-                "husm": HUSM_LOGO_JPEG_B64,
-                "ebserh": EBSERH_LOGO_JPEG_B64,
-                "ufsm": UFSM_LOGO_JPEG_B64,
+                "header": HEADER_LOGO_JPEG_B64,
             }
             b64_str = b64_map.get(kind, "")
             if b64_str:
@@ -1407,54 +1405,32 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     # ---- Cabeçalho com logos (canvas)
     # Desenhamos direto no canvas para ser mais confiável no deploy (Vercel) e em diferentes viewers.
     page_w, page_h = landscape(A4)
-    husm_ir = _load_logo_reader("husm")
-    ufsm_ir = _load_logo_reader("ufsm")
-    ebserh_ir = _load_logo_reader("ebserh")
+    header_ir = _load_logo_reader("header")
 
     def _draw_header(canv: canvas.Canvas, _doc):
         canv.saveState()
         try:
             # área do cabeçalho
-            y_top = page_h - 16
-            y_line = page_h - 60
+            y_top = page_h - 20
+            y_line = page_h - 62
 
-            # tamanhos máximos
-            max_h_husm = 40
-            max_h_ufsm = 45
-            max_h_ebserh = 35
-
-            # esquerda
-            if husm_ir is not None:
-                w, h = _fit_size(husm_ir, max_w=220, max_h=max_h_husm)
-                canv.drawImage(husm_ir, _doc.leftMargin, y_top - h, width=w, height=h, mask='auto')
-            else:
-                canv.setFont("Helvetica", 10)
-                canv.drawString(_doc.leftMargin, y_top - 18, "HUSM")
-
-            # centro
-            if ufsm_ir is not None:
-                w, h = _fit_size(ufsm_ir, max_w=180, max_h=max_h_ufsm)
+            # Logo combinado centralizado
+            if header_ir is not None:
+                w, h = _fit_size(header_ir, max_w=(page_w - _doc.leftMargin - _doc.rightMargin), max_h=42)
                 x = (page_w - w) / 2.0
-                canv.drawImage(ufsm_ir, x, y_top - h, width=w, height=h, mask='auto')
+                canv.drawImage(header_ir, x, y_top - h, width=w, height=h, mask='auto')
             else:
+                # fallback simples (não esperado): texto centralizado
                 canv.setFont("Helvetica", 10)
-                canv.drawCentredString(page_w / 2.0, y_top - 18, "UFSM")
-
-            # direita
-            if ebserh_ir is not None:
-                w, h = _fit_size(ebserh_ir, max_w=200, max_h=max_h_ebserh)
-                x = page_w - _doc.rightMargin - w
-                canv.drawImage(ebserh_ir, x, y_top - h, width=w, height=h, mask='auto')
-            else:
-                canv.setFont("Helvetica", 10)
-                canv.drawRightString(page_w - _doc.rightMargin, y_top - 18, "EBSERH")
+                canv.drawCentredString(page_w / 2.0, y_top - 18, "HUSM | UFSM | EBSERH")
 
             # linha separadora
-            canv.setStrokeColor(colors.grey)
-            canv.setLineWidth(0.5)
+            canv.setStrokeColor(colors.lightgrey)
+            canv.setLineWidth(1)
             canv.line(_doc.leftMargin, y_line, page_w - _doc.rightMargin, y_line)
-        finally:
-            canv.restoreState()
+        except Exception:
+            pass
+        canv.restoreState()
 
     # ---- Título e Processo SEI (centralizados, CAIXA ALTA + NEGRITO)
     story.append(Paragraph(title_main, style_title))
