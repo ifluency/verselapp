@@ -1226,7 +1226,9 @@ def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = Non
 def _fmt_brl(x: float | None) -> str:
     if x is None:
         return ""
-    return float_to_preco_txt(float(x), decimals=2)
+    x = float(x)
+    decimals = 2 if abs(x) >= 1 else 4
+    return float_to_preco_txt(x, decimals=decimals)
 
 
 def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict | None = None) -> bytes:
@@ -1235,6 +1237,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     numero_lista = str(meta.get("numero_lista") or "").strip()
     nome_lista = str(meta.get("nome_lista") or "").strip()
     processo_sei = str(meta.get("processo_sei") or "").strip()
+    responsavel = str(meta.get("responsavel") or "").strip()
 
     # ---- helpers
     def _only_item_number(s: str) -> str:
@@ -1259,7 +1262,14 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     if numero_lista or nome_lista:
         title_main = f"TABELA FINAL DE PREÇOS - LISTA {numero_lista} | {nome_lista}".strip()
 
-    subtitle = f"PROCESSO SEI {processo_sei}".strip() if processo_sei else ""
+    subtitle = ""
+    if processo_sei and responsavel:
+        subtitle = f"PROCESSO SEI {processo_sei} | RESPONSÁVEL: {responsavel}".strip()
+    elif processo_sei:
+        subtitle = f"PROCESSO SEI {processo_sei}".strip()
+    elif responsavel:
+        subtitle = f"RESPONSÁVEL: {responsavel}".strip()
+
 
     # ---- datetime (PT-BR, minúsculas)
     months = [
@@ -1285,7 +1295,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     if now is None:
         now = datetime.now()
 
-    dt_line = f"relatório gerado em {now.day:02d} de {months[now.month - 1]} de {now.year}, às {now:%H:%M}."
+    dt_line = f"Relatório gerado em {now.day:02d} de {months[now.month - 1]} de {now.year}, às {now:%H:%M}."
 
     buf = io.BytesIO()
 
@@ -1394,7 +1404,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     # ---- Termo de referência metodológica (curto e formal)
     story.append(
         Paragraph(
-            "<b>termo de referência metodológica</b>: a estimativa de preços foi calculada conforme as metodologias de exclusão e cálculo descritas no Manual de Orientação: Pesquisa de Preços (4ª edição) do Superior Tribunal de Justiça (STJ), com detalhamento no documento Memória de Cálculo anexo.",
+            "<b>Referência Metodológica</b>: a estimativa de preços foi calculada conforme as metodologias de exclusão e cálculo descritas no Manual de Orientação: Pesquisa de Preços (4ª edição) do Superior Tribunal de Justiça (STJ), com detalhamento no documento Memória de Cálculo anexo.",
             style_normal,
         )
     )
@@ -1410,7 +1420,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         "INEXEQUÍVEIS",
         "MODO ESTIMATIVA",
         "MÉTODO",
-        "VALOR ESTIMADO",
+        "VALOR ESTIMADO (R$)",
     ]
 
     data = [[Paragraph(h, style_head_cell) for h in header]]
@@ -1464,31 +1474,8 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     )
 
     story.append(t)
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 28))
 
-    # ---- Bloco de responsável (campo para assinatura)
-    resp_tbl = Table(
-        [
-            [Paragraph("<b>RESPONSÁVEL</b>", style_normal)],
-            [Paragraph("Nome: _________________________________________________", style_normal)],
-            [Paragraph("Cargo/Setor: __________________________________________", style_normal)],
-            [Paragraph("Assinatura: ___________________________________________", style_normal)],
-        ],
-        colWidths=[sum(col_widths)],
-    )
-    resp_tbl.setStyle(
-        TableStyle(
-            [
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.white),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]
-        )
-    )
-    story.append(resp_tbl)
-    story.append(Spacer(1, 10))
 
     # ---- Rodapé institucional + data
     story.append(
