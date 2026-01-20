@@ -546,7 +546,7 @@ def build_itens_relatorio(df: pd.DataFrame, payload: dict | None = None) -> list
                 "n_bruto": n_bruto,
                 "n_brutos_numericos": int(len(valores_brutos)),
                 "valores_brutos": valores_brutos,          # ordenados
-                "fontes_brutas": fontes_brutas,            # alinhados
+                "fontes_brutos": fontes_brutas,            # alinhados
                 "valor_auto": valor_auto,
                 "metodo_auto": metodo_auto,
                 "n_final_auto": int(len(valores_finais_auto)),
