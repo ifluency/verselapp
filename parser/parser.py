@@ -1,6 +1,13 @@
 import re
 import io
 import json
+from datetime import datetime
+
+try:
+    # Python 3.9+
+    from zoneinfo import ZoneInfo  # type: ignore
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 import pdfplumber
 import pandas as pd
 
@@ -993,7 +1000,7 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
 
         n_bruto = len(g_raw)
         n_parse = len(vals)
-        out.append(f"Amostrar Iniciais: {n_bruto}")
+        out.append(f"Amostras Iniciais: {n_bruto}")
 
         if n_parse == 0:
             out.append("Nenhum valor conseguiu ser convertido para número.")
@@ -1219,11 +1226,18 @@ def _fmt_brl(x: float | None) -> str:
     return float_to_preco_txt(float(x), decimals=2)
 
 
-def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
-    """Gera o PDF 'Tabela Comparativa de Valores' (bytes).
+def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict | None = None) -> bytes:
+    """Gera o PDF 'Tabela Comparativa de Valores' (bytes) com layout solicitado."""
+    meta = meta or {}
+    numero_lista = str(meta.get("numero_lista") or "").strip()
+    nome_lista = str(meta.get("nome_lista") or "").strip()
+    processo_sei = str(meta.get("processo_sei") or "").strip()
 
-    A ideia é ser um PDF oficial, com uma tabela clara e repetição de cabeçalho.
-    """
+    # Título (se faltar meta, ainda gera, mas o front valida como obrigatório)
+    title_main = "Tabela Comparativa de Valores"
+    if numero_lista or nome_lista:
+        title_main = f"Tabela Comparativa de Valores - Lista {numero_lista} | {nome_lista}".strip()
+
     buf = io.BytesIO()
 
     doc = SimpleDocTemplate(
@@ -1240,54 +1254,60 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
     style_title = styles["Title"]
     style_normal = styles["Normal"]
 
-    story = []
-    story.append(Paragraph("Tabela Comparativa de Valores — UPDE / HUSM / UFSM", style_title))
-    story.append(Spacer(1, 12))
+    story: list = []
+    story.append(Paragraph(title_main, style_title))
+    if processo_sei:
+        story.append(Paragraph(f"Processo SEI {processo_sei}", style_normal))
+    story.append(Spacer(1, 10))
+
+    # Legenda
+    story.append(Paragraph("<b>LEGENDA</b>", style_normal))
+    story.append(Paragraph("A.I. = Amostras Iniciais", style_normal))
+    story.append(Paragraph("A.F. = Amostras Finais", style_normal))
+    story.append(Paragraph("E.E. = Excessivamente Elevados", style_normal))
+    story.append(Paragraph("INEXEQ. = Inexequíveis", style_normal))
+    story.append(Spacer(1, 10))
 
     header = [
-        "Item",
-        "Catmat",
-        "N iniciais",
-        "N finais",
-        "Excl. altos",
-        "Excl. baixos",
-        "Valor calculado",
-        "Último licitado",
-        "Modo",
-        "Método",
-        "Valor final",
-        "Dif. (R$)",
-        "Dif. (%)",
+        "ITEM",
+        "CATMAT",
+        "A.I.",
+        "A.F.",
+        "E.E.",
+        "INEXEQ.",
+        "MODO EST.",
+        "MÉTODO",
+        "VALOR ESTIMADO",
     ]
+
+    def _only_item_number(s: str) -> str:
+        if s is None:
+            return ""
+        m = re.search(r"(\d+)", str(s))
+        return m.group(1) if m else str(s)
 
     data = [header]
     for it in itens_relatorio or []:
-        valor_auto = _safe_float(it.get("valor_auto"))
-        lastq = _safe_float(it.get("last_quote"))
+        item_num = _only_item_number(it.get("item", ""))
+        catmat = str(it.get("catmat", ""))
+        ai = str(it.get("n_bruto", ""))
+        af = str(it.get("n_final_auto", ""))
+        ee = str(it.get("excl_altos", ""))
+        inex = str(it.get("excl_baixos", ""))
+        modo = str(it.get("modo_final", ""))
+        metodo = str(it.get("metodo_final", ""))
         valor_final = _safe_float(it.get("valor_final"))
-
-        diff_abs = None
-        diff_pct = None
-        if valor_final is not None and lastq is not None:
-            diff_abs = valor_final - lastq
-            if lastq != 0:
-                diff_pct = (diff_abs / lastq) * 100.0
-
         data.append(
             [
-                str(it.get("item", "")),
-                str(it.get("catmat", "")),
-                str(it.get("n_bruto", "")),
-                str(it.get("n_final_auto", "")),
-                str(it.get("excl_altos", "")),
-                str(it.get("excl_baixos", "")),
-                _fmt_brl(valor_auto),
-                _fmt_brl(lastq),
-                str(it.get("modo_final", "")),
-                str(it.get("metodo_final", "")),
+                item_num,
+                catmat,
+                ai,
+                af,
+                ee,
+                inex,
+                modo,
+                metodo,
                 _fmt_brl(valor_final),
-                _fmt_brl(diff_abs),
-                (f"{diff_pct:.2f}%".replace(".", ",") if diff_pct is not None else ""),
             ]
         )
 
@@ -1310,12 +1330,33 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict]) -> bytes:
 
     story.append(t)
     story.append(Spacer(1, 12))
-    story.append(
-        Paragraph(
-            "Obs.: Itens em modo 'Pendente' indicam que o último licitado é maior que o valor calculado, mas não houve ajuste manual aplicado.",
-            style_normal,
-        )
-    )
+
+    # Rodapé com data/hora de geração (America/Sao_Paulo quando disponível)
+    months = [
+        "JANEIRO",
+        "FEVEREIRO",
+        "MARÇO",
+        "ABRIL",
+        "MAIO",
+        "JUNHO",
+        "JULHO",
+        "AGOSTO",
+        "SETEMBRO",
+        "OUTUBRO",
+        "NOVEMBRO",
+        "DEZEMBRO",
+    ]
+    now = None
+    if ZoneInfo is not None:
+        try:
+            now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        except Exception:
+            now = None
+    if now is None:
+        now = datetime.now()
+
+    dt_str = f"{now.day:02d} DE {months[now.month - 1]} DE {now.year}, ÀS {now:%H:%M}."
+    story.append(Paragraph(f"Relatório gerado em {dt_str}", style_normal))
 
     doc.build(story)
     buf.seek(0)
