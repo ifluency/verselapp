@@ -12,7 +12,6 @@ from parser.parser import (
     build_excel_bytes,
     build_memoria_calculo_pdf_bytes,
     build_pdf_tabela_comparativa_bytes,
-    PdfIncompatibilityError,
 )
 
 
@@ -83,9 +82,6 @@ class handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(zip_bytes)))
             self.end_headers()
             self.wfile.write(zip_bytes)
-
-        except PdfIncompatibilityError as e:
-            self._send_text(400, str(e))
 
         except Exception as e:
             tb = traceback.format_exc()
