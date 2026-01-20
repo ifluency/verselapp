@@ -2,6 +2,7 @@ import re
 import io
 import json
 import os
+import base64
 from datetime import datetime
 
 try:
@@ -1246,7 +1247,21 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         m = re.search(r"(\d+)", str(s))
         return m.group(1) if m else str(s)
 
-    def _logo(path: str, max_w: float, max_h: float):
+    def _logo_b64(b64_str: str, max_w: float, max_h: float):
+        try:
+            if not b64_str:
+                return ""
+            raw = base64.b64decode(b64_str)
+            ir = ImageReader(io.BytesIO(raw))
+            w, h = ir.getSize()
+            if not w or not h:
+                return ""
+            scale = min(max_w / float(w), max_h / float(h))
+            return Image(ir, width=float(w) * scale, height=float(h) * scale)
+        except Exception:
+            return ""
+
+    def _logo_file(path: str, max_w: float, max_h: float):
         try:
             ir = ImageReader(path)
             w, h = ir.getSize()
@@ -1367,14 +1382,28 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     story: list = []
 
     # ---- Cabeçalho com logos
-    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-    husm_path = os.path.join(assets_dir, "husm.png")
-    ebserh_path = os.path.join(assets_dir, "ebserh.png")
-    ufsm_path = os.path.join(assets_dir, "ufsm.png")
+    # Preferir logos embutidas (base64 JPEG) para evitar dependência de filesystem no deploy.
+    try:
+        from parser.logo_b64 import HUSM_LOGO_JPEG_B64, EBSERH_LOGO_JPEG_B64, UFSM_LOGO_JPEG_B64
+    except Exception:
+        HUSM_LOGO_JPEG_B64 = EBSERH_LOGO_JPEG_B64 = UFSM_LOGO_JPEG_B64 = ''
 
-    logo_husm = _logo(husm_path, max_w=220, max_h=40)
-    logo_ufsm = _logo(ufsm_path, max_w=180, max_h=45)
-    logo_ebserh = _logo(ebserh_path, max_w=200, max_h=35)
+    logo_husm = _logo_b64(HUSM_LOGO_JPEG_B64, max_w=220, max_h=40)
+    logo_ufsm = _logo_b64(UFSM_LOGO_JPEG_B64, max_w=180, max_h=45)
+    logo_ebserh = _logo_b64(EBSERH_LOGO_JPEG_B64, max_w=200, max_h=35)
+
+    # Fallback: tentar carregar do filesystem (quando disponível)
+    if not logo_husm or not logo_ufsm or not logo_ebserh:
+        assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
+        husm_path = os.path.join(assets_dir, 'husm.png')
+        ebserh_path = os.path.join(assets_dir, 'ebserh.png')
+        ufsm_path = os.path.join(assets_dir, 'ufsm.png')
+        if not logo_husm:
+            logo_husm = _logo_file(husm_path, max_w=220, max_h=40)
+        if not logo_ufsm:
+            logo_ufsm = _logo_file(ufsm_path, max_w=180, max_h=45)
+        if not logo_ebserh:
+            logo_ebserh = _logo_file(ebserh_path, max_w=200, max_h=35)
 
     header_tbl = Table(
         [[logo_husm, logo_ufsm, logo_ebserh]],
