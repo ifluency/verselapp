@@ -85,6 +85,11 @@ export default function Page() {
   const [nomeLista, setNomeLista] = useState<string>("");
   const [processoSEI, setProcessoSEI] = useState<string>("");
 
+  const [responsavel, setResponsavel] = useState<string>("");
+
+  const reqBg = (v: string) => (v.trim() ? "#ffffff" : "#ffe9e9");
+  const reqBorder = (v: string) => (v.trim() ? "#ccc" : "#d32f2f");
+
   // Destaque visual: linha atualmente em edição do "Último licitado"
   const [activeLastQuoteRow, setActiveLastQuoteRow] = useState<string | null>(null);
 
@@ -230,6 +235,7 @@ export default function Page() {
     setNumeroLista("");
     setNomeLista("");
     setProcessoSEI("");
+    setResponsavel("");
 
     try {
       const form = new FormData();
@@ -260,8 +266,8 @@ export default function Page() {
       return;
     }
 
-    if (!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim()) {
-      setStatus("Preencha os campos obrigatórios: Número da Lista, Nome da Lista e Processo SEI.");
+    if (!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()) {
+      setStatus("Preencha os campos obrigatórios: Número da Lista, Nome da Lista, Processo SEI e Responsável.");
       return;
     }
 
@@ -292,6 +298,7 @@ export default function Page() {
         numero_lista: numeroLista.trim(),
         nome_lista: nomeLista.trim(),
         processo_sei: processoSEI.trim(),
+        responsavel: responsavel.trim(),
       },
     };
 
@@ -458,7 +465,7 @@ export default function Page() {
               padding: "10px 12px",
               border: "1px solid #ddd",
               borderRadius: 8,
-              background: "#fafafa",
+              background: "#f0f0f0",
             }}
           >
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -473,7 +480,8 @@ export default function Page() {
                   width: 160,
                   fontSize: 14,
                   padding: "6px 8px",
-                  border: "1px solid #ccc",
+                  border: `1px solid ${reqBorder(numeroLista)}` as any,
+                  background: reqBg(numeroLista),
                   borderRadius: 6,
                 }}
               />
@@ -491,7 +499,8 @@ export default function Page() {
                   width: "100%",
                   fontSize: 14,
                   padding: "6px 8px",
-                  border: "1px solid #ccc",
+                  border: `1px solid ${reqBorder(nomeLista)}` as any,
+                  background: reqBg(nomeLista),
                   borderRadius: 6,
                 }}
               />
@@ -509,13 +518,33 @@ export default function Page() {
                   width: 220,
                   fontSize: 14,
                   padding: "6px 8px",
-                  border: "1px solid #ccc",
+                  border: `1px solid ${reqBorder(processoSEI)}` as any,
+                  background: reqBg(processoSEI),
                   borderRadius: 6,
                 }}
               />
             </div>
 
-            {(!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim()) && (
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
+              <label style={{ fontWeight: 700 }}>
+                Responsável <span style={{ color: "#c62828" }}>*</span>
+              </label>
+              <input
+                value={responsavel}
+                onChange={(e) => setResponsavel(e.target.value)}
+                placeholder="Ex: Pedro"
+                style={{
+                  width: 220,
+                  fontSize: 14,
+                  padding: "6px 8px",
+                  border: `1px solid ${reqBorder(responsavel)}` as any,
+                  background: reqBg(responsavel),
+                  borderRadius: 6,
+                }}
+              />
+            </div>
+{(!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()) && (
               <div style={{ color: "#c62828", fontWeight: 600, marginLeft: "auto" }}>
                 Preencha os campos obrigatórios para liberar o ZIP.
               </div>
