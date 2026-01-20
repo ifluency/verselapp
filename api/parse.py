@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 
 import pandas as pd
 
-from parser.parser import process_pdf_bytes, gerar_resumo, build_memoria_calculo_pdf_bytes
+from parser.parser import process_pdf_bytes, gerar_resumo, build_memoria_calculo_pdf_bytes, PdfIncompatibilityError
 
 
 class handler(BaseHTTPRequestHandler):
@@ -76,6 +76,9 @@ class handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(zip_bytes)))
             self.end_headers()
             self.wfile.write(zip_bytes)
+
+        except PdfIncompatibilityError as e:
+            self._send_text(400, str(e))
 
         except Exception as e:
             tb = traceback.format_exc()
