@@ -1247,30 +1247,48 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         m = re.search(r"(\d+)", str(s))
         return m.group(1) if m else str(s)
 
-    def _logo_b64(b64_str: str, max_w: float, max_h: float):
-        try:
-            if not b64_str:
-                return ""
-            raw = base64.b64decode(b64_str)
-            ir = ImageReader(io.BytesIO(raw))
-            w, h = ir.getSize()
-            if not w or not h:
-                return ""
-            scale = min(max_w / float(w), max_h / float(h))
-            return Image(ir, width=float(w) * scale, height=float(h) * scale)
-        except Exception:
-            return ""
+    def _load_logo_reader(kind: str) -> ImageReader | None:
+        """Carrega logo como ImageReader.
 
-    def _logo_file(path: str, max_w: float, max_h: float):
+        Prioridade:
+          1) base64 (arquivo parser/logo_b64.py)
+          2) arquivo em parser/assets/<kind>.png
+
+        Observação: desenhamos as imagens diretamente no canvas (onFirstPage/onLaterPages),
+        pois isso é mais robusto no deploy (Vercel) do que usar imagens como Flowables.
+        """
+        # 1) base64
         try:
-            ir = ImageReader(path)
-            w, h = ir.getSize()
-            if not w or not h:
-                return ""
-            scale = min(max_w / float(w), max_h / float(h))
-            return Image(path, width=float(w) * scale, height=float(h) * scale)
+            from parser.logo_b64 import HUSM_LOGO_JPEG_B64, EBSERH_LOGO_JPEG_B64, UFSM_LOGO_JPEG_B64
+
+            b64_map = {
+                "husm": HUSM_LOGO_JPEG_B64,
+                "ebserh": EBSERH_LOGO_JPEG_B64,
+                "ufsm": UFSM_LOGO_JPEG_B64,
+            }
+            b64_str = b64_map.get(kind, "")
+            if b64_str:
+                raw = base64.b64decode(b64_str)
+                return ImageReader(io.BytesIO(raw))
         except Exception:
-            return ""
+            pass
+
+        # 2) filesystem
+        try:
+            assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+            path = os.path.join(assets_dir, f"{kind}.png")
+            if os.path.exists(path):
+                return ImageReader(path)
+        except Exception:
+            pass
+        return None
+
+    def _fit_size(ir: ImageReader, max_w: float, max_h: float) -> tuple[float, float]:
+        w, h = ir.getSize()
+        if not w or not h:
+            return (0.0, 0.0)
+        scale = min(max_w / float(w), max_h / float(h))
+        return (float(w) * scale, float(h) * scale)
 
     # ---- title/subtitle (CAIXA ALTA + NEGRITO)
     title_main = "TABELA FINAL DE PREÇOS"
@@ -1314,12 +1332,13 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
 
     buf = io.BytesIO()
 
+    # Reservar espaço para cabeçalho com logos (desenhado no canvas)
     doc = SimpleDocTemplate(
         buf,
         pagesize=landscape(A4),
         leftMargin=24,
         rightMargin=24,
-        topMargin=18,
+        topMargin=78,
         bottomMargin=18,
         title="Tabela Final de Preços",
     )
@@ -1381,47 +1400,57 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
 
     story: list = []
 
-    # ---- Cabeçalho com logos
-    # Preferir logos embutidas (base64 JPEG) para evitar dependência de filesystem no deploy.
-    try:
-        from parser.logo_b64 import HUSM_LOGO_JPEG_B64, EBSERH_LOGO_JPEG_B64, UFSM_LOGO_JPEG_B64
-    except Exception:
-        HUSM_LOGO_JPEG_B64 = EBSERH_LOGO_JPEG_B64 = UFSM_LOGO_JPEG_B64 = ''
+    # ---- Cabeçalho com logos (canvas)
+    # Desenhamos direto no canvas para ser mais confiável no deploy (Vercel) e em diferentes viewers.
+    page_w, page_h = landscape(A4)
+    husm_ir = _load_logo_reader("husm")
+    ufsm_ir = _load_logo_reader("ufsm")
+    ebserh_ir = _load_logo_reader("ebserh")
 
-    logo_husm = _logo_b64(HUSM_LOGO_JPEG_B64, max_w=220, max_h=40)
-    logo_ufsm = _logo_b64(UFSM_LOGO_JPEG_B64, max_w=180, max_h=45)
-    logo_ebserh = _logo_b64(EBSERH_LOGO_JPEG_B64, max_w=200, max_h=35)
+    def _draw_header(canv: canvas.Canvas, _doc):
+        canv.saveState()
+        try:
+            # área do cabeçalho
+            y_top = page_h - 16
+            y_line = page_h - 60
 
-    # Fallback: tentar carregar do filesystem (quando disponível)
-    if not logo_husm or not logo_ufsm or not logo_ebserh:
-        assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
-        husm_path = os.path.join(assets_dir, 'husm.png')
-        ebserh_path = os.path.join(assets_dir, 'ebserh.png')
-        ufsm_path = os.path.join(assets_dir, 'ufsm.png')
-        if not logo_husm:
-            logo_husm = _logo_file(husm_path, max_w=220, max_h=40)
-        if not logo_ufsm:
-            logo_ufsm = _logo_file(ufsm_path, max_w=180, max_h=45)
-        if not logo_ebserh:
-            logo_ebserh = _logo_file(ebserh_path, max_w=200, max_h=35)
+            # tamanhos máximos
+            max_h_husm = 40
+            max_h_ufsm = 45
+            max_h_ebserh = 35
 
-    header_tbl = Table(
-        [[logo_husm, logo_ufsm, logo_ebserh]],
-        colWidths=[250, 290, 250],
-        hAlign="CENTER",
-    )
-    header_tbl.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.grey),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
-    )
-    story.append(header_tbl)
-    story.append(Spacer(1, 8))
+            # esquerda
+            if husm_ir is not None:
+                w, h = _fit_size(husm_ir, max_w=220, max_h=max_h_husm)
+                canv.drawImage(husm_ir, _doc.leftMargin, y_top - h, width=w, height=h, mask='auto')
+            else:
+                canv.setFont("Helvetica", 10)
+                canv.drawString(_doc.leftMargin, y_top - 18, "HUSM")
+
+            # centro
+            if ufsm_ir is not None:
+                w, h = _fit_size(ufsm_ir, max_w=180, max_h=max_h_ufsm)
+                x = (page_w - w) / 2.0
+                canv.drawImage(ufsm_ir, x, y_top - h, width=w, height=h, mask='auto')
+            else:
+                canv.setFont("Helvetica", 10)
+                canv.drawCentredString(page_w / 2.0, y_top - 18, "UFSM")
+
+            # direita
+            if ebserh_ir is not None:
+                w, h = _fit_size(ebserh_ir, max_w=200, max_h=max_h_ebserh)
+                x = page_w - _doc.rightMargin - w
+                canv.drawImage(ebserh_ir, x, y_top - h, width=w, height=h, mask='auto')
+            else:
+                canv.setFont("Helvetica", 10)
+                canv.drawRightString(page_w - _doc.rightMargin, y_top - 18, "EBSERH")
+
+            # linha separadora
+            canv.setStrokeColor(colors.grey)
+            canv.setLineWidth(0.5)
+            canv.line(_doc.leftMargin, y_line, page_w - _doc.rightMargin, y_line)
+        finally:
+            canv.restoreState()
 
     # ---- Título e Processo SEI (centralizados, CAIXA ALTA + NEGRITO)
     story.append(Paragraph(title_main, style_title))
@@ -1516,6 +1545,6 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     story.append(Spacer(1, 6))
     story.append(Paragraph(dt_line, style_date))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=_draw_header, onLaterPages=_draw_header)
     buf.seek(0)
     return buf.read()
