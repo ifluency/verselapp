@@ -595,7 +595,7 @@ export default function Page() {
                       border: "1px solid #ddd",
                       padding: "8px 8px",
                       background: "#f7f7f7",
-                      textAlign: "left",
+                      textAlign: "center",
                       whiteSpace: "normal",
                     }}
                   >
@@ -618,16 +618,16 @@ export default function Page() {
                       transition: "background 120ms ease, box-shadow 120ms ease",
                     }}
                   >
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.item}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.catmat}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.n_bruto}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.n_final}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.excl_altos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.excl_baixos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.item}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.catmat}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_bruto}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_final}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_altos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_baixos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
                     {fmtBRL(r.valor_calculado)}
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
                     <input
                       value={lastQuotes[r.item] || ""}
                       onChange={(e) =>
@@ -649,14 +649,14 @@ export default function Page() {
                       }}
                     />
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.modo}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.modo}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
                     {fmtBRL(r.valorFinal)}
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
                     {fmtBRL(r.diffAbs)}
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button
                         onClick={() => openManualModal(r)}
