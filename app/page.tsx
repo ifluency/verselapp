@@ -31,6 +31,15 @@ function parseBRL(input: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function safeSlug(input: string): string {
+  const s = (input || "").trim();
+  const slug = s
+    .replace(/[^0-9A-Za-z._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "SEM_NUMERO";
+}
+
 function fmtBRL(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "";
   // Formato simples PT-BR: 1234.56 -> 1234,56 (sem milhares para manter consistente)
@@ -317,13 +326,14 @@ export default function Page() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "resultado.zip";
+      const numeroSlug = safeSlug(numeroLista);
+      a.download = `Formacao_Precos_Referencia_Lista_${numeroSlug}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
 
-      setStatus("Concluído! ZIP gerado com Excel + 2 PDFs.");
+      setStatus("Concluído! ZIP gerado com 2 PDFs.");
     } catch (e: any) {
       setStatus(`Falha ao gerar ZIP: ${String(e)}`);
     } finally {
@@ -402,8 +412,54 @@ export default function Page() {
             Formação de preços de referência com base em pesquisa do ComprasGOV
           </div>
         </div>
+      </header>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      {/* Etapas */}
+      <div
+        style={{
+          marginTop: 12,
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {[
+            { label: "1. Upload", done: !!file },
+            { label: "2. Prévia", done: preview.length > 0 },
+            { label: "3. Último licitado", done: preview.length > 0 },
+            { label: "4. Ajuste manual", done: Object.keys(overrides).length > 0 },
+            { label: "5. Gerar ZIP", done: false },
+          ].map((s) => (
+            <div
+              key={s.label}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: s.done ? "#ecfdf5" : "#f9fafb",
+                color: s.done ? "#065f46" : "#374151",
+                fontWeight: 700,
+                fontSize: 12,
+              }}
+            >
+              {s.label}
+            </div>
+          ))}
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+            marginLeft: "auto",
+          }}
+        >
           <input
             type="file"
             accept="application/pdf"
@@ -414,43 +470,9 @@ export default function Page() {
             {loadingPreview ? "Carregando..." : "Gerar prévia"}
           </button>
         </div>
-      </header>
-
-      {/* Etapas */}
-      <div
-        style={{
-          marginTop: 12,
-          display: "flex",
-          gap: 8,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
-        {[
-          { label: "1. Upload", done: !!file },
-          { label: "2. Prévia", done: preview.length > 0 },
-          { label: "3. Último licitado", done: preview.length > 0 },
-          { label: "4. Ajuste manual", done: Object.keys(overrides).length > 0 },
-          { label: "5. Gerar ZIP", done: false },
-        ].map((s) => (
-          <div
-            key={s.label}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 999,
-              border: "1px solid #e5e7eb",
-              background: s.done ? "#ecfdf5" : "#f9fafb",
-              color: s.done ? "#065f46" : "#374151",
-              fontWeight: 700,
-              fontSize: 12,
-            }}
-          >
-            {s.label}
-          </div>
-        ))}
       </div>
 
-      {status && <p style={{ marginTop: 12 }}>{status}</p>}
+{status && <p style={{ marginTop: 12 }}>{status}</p>}
 
       {preview.length > 0 && (
         <div style={{ marginTop: 16, overflowX: "hidden" }}>
@@ -952,10 +974,10 @@ export default function Page() {
               title={
                 !preview.length
                   ? "Gere a prévia primeiro"
-                  : "Gerar ZIP (Excel + PDFs)"
+                  : "Gerar ZIP (PDFs)"
               }
             >
-              {loadingGenerate ? "Gerando..." : "Gerar ZIP (Excel + PDFs)"}
+              {loadingGenerate ? "Gerando..." : "Gerar ZIP (PDFs)"}
             </button>
 
             <button
