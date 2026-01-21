@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type PreviewItem = {
   item: string;
@@ -89,6 +89,9 @@ export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>("");
 
+  // Desativa "Gerar prévia" depois de gerar (reabilita ao trocar o arquivo)
+  const [previewReady, setPreviewReady] = useState(false);
+
   // Campos obrigatórios para o PDF Tabela Comparativa de Valores
   const [numeroLista, setNumeroLista] = useState<string>("");
   const [nomeLista, setNomeLista] = useState<string>("");
@@ -120,6 +123,21 @@ export default function Page() {
   const [modalMethod, setModalMethod] = useState<"media" | "mediana">("media");
   const [modalJustCode, setModalJustCode] = useState<string>("");
   const [modalJustText, setModalJustText] = useState<string>("");
+
+  // Ao trocar o arquivo, reseta o fluxo e reabilita a prévia
+  useEffect(() => {
+    setPreview([]);
+    setOverrides({});
+    setLastQuotes({});
+    setModalItemId(null);
+    setActiveLastQuoteRow(null);
+    setStatus("");
+    setPreviewReady(false);
+    setNumeroLista("");
+    setNomeLista("");
+    setProcessoSEI("");
+    setResponsavel("");
+  }, [file?.name, file?.size, file?.lastModified]);
 
   const modalIdxToVal = useMemo(() => {
     const m = new Map<number, number>();
@@ -238,13 +256,10 @@ export default function Page() {
     }
     setStatus("Gerando prévia...");
     setLoadingPreview(true);
+    setPreviewReady(false);
     setPreview([]);
     setOverrides({});
     setLastQuotes({});
-    setNumeroLista("");
-    setNomeLista("");
-    setProcessoSEI("");
-    setResponsavel("");
 
     try {
       const form = new FormData();
@@ -258,6 +273,7 @@ export default function Page() {
       const data = await res.json();
       setPreview((data.items || []) as PreviewItem[]);
       setStatus("Prévia carregada. Preencha o último licitado e, se necessário, ajuste manualmente.");
+      setPreviewReady(true);
     } catch (e: any) {
       setStatus(`Falha ao gerar prévia: ${String(e)}`);
     } finally {
@@ -340,6 +356,15 @@ export default function Page() {
       setLoadingGenerate(false);
     }
   }
+
+  const canGenerate =
+    !!file &&
+    preview.length > 0 &&
+    !loadingGenerate &&
+    !!numeroLista.trim() &&
+    !!nomeLista.trim() &&
+    !!processoSEI.trim() &&
+    !!responsavel.trim();
 
   const tableRows = useMemo(() => {
     return preview.map((it) => {
@@ -461,12 +486,27 @@ export default function Page() {
           }}
         >
           <input
+            id="pdfInput"
             type="file"
             accept="application/pdf"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            style={{ display: "none" }}
           />
 
-          <button onClick={loadPreview} disabled={!file || loadingPreview} style={{ fontWeight: 700 }}>
+          <label htmlFor="pdfInput" className="btn fileBtn" title="Escolher PDF">
+            Escolher arquivo
+          </label>
+
+          <span style={{ fontSize: 12, color: "#4b5563", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {file ? file.name : "Nenhum arquivo escolhido"}
+          </span>
+
+          <button
+            onClick={loadPreview}
+            disabled={!file || loadingPreview || previewReady}
+            className={`btn ${previewReady ? "btnGhost" : "btnPrimary"}`}
+            title={previewReady ? "Prévia já gerada (troque o arquivo para gerar novamente)" : "Gerar prévia"}
+          >
             {loadingPreview ? "Carregando..." : "Gerar prévia"}
           </button>
         </div>
@@ -690,11 +730,10 @@ export default function Page() {
                               : "Ajustar manualmente"
                             : "Só disponível quando Valor calculado ≤ 1,2× Último licitado"
                         }
+                        className="btn"
                         style={(() => {
                           if (!r.allowManual) {
                             return {
-                              padding: "4px 10px",
-                              borderRadius: 6,
                               cursor: "not-allowed",
                               opacity: 0.6,
                             };
@@ -705,8 +744,6 @@ export default function Page() {
                               color: "white",
                               border: "1px solid #1b5e20",
                               fontWeight: 700,
-                              padding: "4px 10px",
-                              borderRadius: 6,
                               cursor: "pointer",
                             };
                           }
@@ -716,8 +753,6 @@ export default function Page() {
                               color: "white",
                               border: "1px solid #8e0000",
                               fontWeight: 700,
-                              padding: "4px 10px",
-                              borderRadius: 6,
                               cursor: "pointer",
                             };
                           }
@@ -727,8 +762,6 @@ export default function Page() {
                             color: "#000",
                             border: "1px solid #c9a100",
                             fontWeight: 700,
-                            padding: "4px 10px",
-                            borderRadius: 6,
                             cursor: "pointer",
                           };
                         })()}
@@ -736,7 +769,7 @@ export default function Page() {
                         Ajustar
                       </button>
                       {r.hasOverride && (
-                        <button onClick={() => clearManualOverride(r.item)}>
+                        <button className="btn btnGhost" onClick={() => clearManualOverride(r.item)}>
                           Limpar
                         </button>
                       )}
@@ -911,8 +944,10 @@ export default function Page() {
                 </div>
 
                 <div style={{ display: "flex", gap: 12, marginTop: 16, justifyContent: "flex-end" }}>
-                  <button onClick={closeModal}>Cancelar</button>
-                  <button onClick={saveManualOverride} style={{ fontWeight: 800 }}>
+                  <button className="btn btnGhost" onClick={closeModal}>
+                    Cancelar
+                  </button>
+                  <button className="btn btnPrimary" onClick={saveManualOverride}>
                     Salvar ajuste
                   </button>
                 </div>
@@ -961,23 +996,11 @@ export default function Page() {
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <button
               onClick={generateZip}
-              disabled={
-                !file ||
-                !preview.length ||
-                loadingGenerate ||
-                !numeroLista.trim() ||
-                !nomeLista.trim() ||
-                !processoSEI.trim() ||
-                !responsavel.trim()
-              }
-              style={{ fontWeight: 800 }}
-              title={
-                !preview.length
-                  ? "Gere a prévia primeiro"
-                  : "Gerar ZIP (PDFs)"
-              }
+              disabled={!file || !preview.length || loadingGenerate || !numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()}
+              className={`btn ${canGenerate ? "btnCta" : "btnPrimary"}`}
+              title={!preview.length ? "Gere a prévia primeiro" : canGenerate ? "Baixar ZIP (PDFs)" : "Preencha os campos obrigatórios"}
             >
-              {loadingGenerate ? "Gerando..." : "Gerar ZIP (PDFs)"}
+              {loadingGenerate ? "Gerando..." : canGenerate ? "Baixar ZIP (PDFs)" : "Gerar ZIP (PDFs)"}
             </button>
 
             <button
@@ -1007,6 +1030,7 @@ export default function Page() {
                 setStatus("Debug baixado.");
               }}
               disabled={!file}
+              className="btn"
             >
               Debug (TXT)
             </button>
