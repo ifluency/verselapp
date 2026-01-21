@@ -87,8 +87,8 @@ export default function Page() {
 
   const [responsavel, setResponsavel] = useState<string>("");
 
-  const reqBg = (v: string) => (v.trim() ? "#ffffff" : "#ffe9e9");
-  const reqBorder = (v: string) => (v.trim() ? "#ccc" : "#d32f2f");
+  const reqBg = (v: string) => (v.trim() ? "#ffffff" : "#f3f4f6");
+  const reqBorder = (v: string) => (v.trim() ? "#cbd5e1" : "#ef4444");
 
   // Destaque visual: linha atualmente em edição do "Último licitado"
   const [activeLastQuoteRow, setActiveLastQuoteRow] = useState<string | null>(null);
@@ -351,7 +351,7 @@ export default function Page() {
         adjustColor = calc < last ? "red" : "yellow";
       }
 
-      let modo = "Auto";
+      let modo = "Automático";
       let metodo = "";
       let valorFinal: number | null = calc;
 
@@ -384,70 +384,70 @@ export default function Page() {
   }, [preview, lastQuotes, overrides]);
 
   return (
-    <main style={{ maxWidth: "100%", margin: "12px auto", padding: "0 8px" }}>
-      <h1>UPDE — Preços de Referência (Prévia + Ajuste Manual)</h1>
-      <p>
-        1) Faça upload do PDF do ComprasGOV → 2) Veja a prévia → 3) Informe o último licitado → 4)
-        Ajuste manual (liberado quando <strong>Valor calculado ≤ 1,2× Último licitado</strong>) → 5)
-        Gere o ZIP.
-      </p>
+    <main style={{ maxWidth: 1200, margin: "12px auto", padding: "0 16px 110px" }}>
+      <header
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-end",
+          gap: 12,
+          flexWrap: "wrap",
+          padding: "10px 0 6px",
+          borderBottom: "1px solid #e5e7eb",
+        }}
+      >
+        <div>
+          <h1 style={{ margin: 0 }}>Análise de Preços - UPDE</h1>
+          <div style={{ marginTop: 4, color: "#4b5563" }}>
+            Formação de preços de referência com base em pesquisa do ComprasGOV
+          </div>
+        </div>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <input
-          type="file"
-          accept="application/pdf"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-        />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
 
-        <button onClick={loadPreview} disabled={!file || loadingPreview}>
-          {loadingPreview ? "Carregando..." : "Gerar prévia"}
-        </button>
+          <button onClick={loadPreview} disabled={!file || loadingPreview} style={{ fontWeight: 700 }}>
+            {loadingPreview ? "Carregando..." : "Gerar prévia"}
+          </button>
+        </div>
+      </header>
 
-        <button
-          onClick={generateZip}
-          disabled={
-            !file ||
-            !preview.length ||
-            loadingGenerate ||
-            !numeroLista.trim() ||
-            !nomeLista.trim() ||
-            !processoSEI.trim()
-          }
-          style={{ fontWeight: 700 }}
-        >
-          {loadingGenerate ? "Gerando..." : "Gerar ZIP (Excel + PDFs)"}
-        </button>
-
-        <button
-          onClick={async () => {
-            if (!file) {
-              setStatus("Selecione um PDF primeiro.");
-              return;
-            }
-            setStatus("Gerando debug...");
-            const form = new FormData();
-            form.append("file", file);
-            const res = await fetch("/api/debug", { method: "POST", body: form });
-            if (!res.ok) {
-              const msg = await res.text();
-              setStatus(`Falha ao gerar debug: ${msg}`);
-              return;
-            }
-            const blob = await res.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "debug_audit.txt";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url);
-            setStatus("Debug baixado.");
-          }}
-          disabled={!file}
-        >
-          Debug (TXT)
-        </button>
+      {/* Etapas */}
+      <div
+        style={{
+          marginTop: 12,
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        {[
+          { label: "1. Upload", done: !!file },
+          { label: "2. Prévia", done: preview.length > 0 },
+          { label: "3. Último licitado", done: preview.length > 0 },
+          { label: "4. Ajuste manual", done: Object.keys(overrides).length > 0 },
+          { label: "5. Gerar ZIP", done: false },
+        ].map((s) => (
+          <div
+            key={s.label}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: "1px solid #e5e7eb",
+              background: s.done ? "#ecfdf5" : "#f9fafb",
+              color: s.done ? "#065f46" : "#374151",
+              fontWeight: 700,
+              fontSize: 12,
+            }}
+          >
+            {s.label}
+          </div>
+        ))}
       </div>
 
       {status && <p style={{ marginTop: 12 }}>{status}</p>}
@@ -899,6 +899,99 @@ export default function Page() {
           </div>
         </div>
       )}
+
+      {/* Barra fixa de ações */}
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(255,255,255,0.92)",
+          borderTop: "1px solid #e5e7eb",
+          padding: "10px 16px",
+          backdropFilter: "blur(6px)",
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 1200,
+            margin: "0 auto",
+            display: "flex",
+            gap: 10,
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ color: "#4b5563", fontSize: 13 }}>
+            {loadingGenerate
+              ? "Gerando ZIP..."
+              : loadingPreview
+              ? "Gerando prévia..."
+              : preview.length
+              ? "Prévia pronta. Preencha os campos obrigatórios e gere o ZIP."
+              : file
+              ? "Arquivo selecionado. Gere a prévia para continuar."
+              : "Selecione um PDF para começar."}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={generateZip}
+              disabled={
+                !file ||
+                !preview.length ||
+                loadingGenerate ||
+                !numeroLista.trim() ||
+                !nomeLista.trim() ||
+                !processoSEI.trim() ||
+                !responsavel.trim()
+              }
+              style={{ fontWeight: 800 }}
+              title={
+                !preview.length
+                  ? "Gere a prévia primeiro"
+                  : "Gerar ZIP (Excel + PDFs)"
+              }
+            >
+              {loadingGenerate ? "Gerando..." : "Gerar ZIP (Excel + PDFs)"}
+            </button>
+
+            <button
+              onClick={async () => {
+                if (!file) {
+                  setStatus("Selecione um PDF primeiro.");
+                  return;
+                }
+                setStatus("Gerando debug...");
+                const form = new FormData();
+                form.append("file", file);
+                const res = await fetch("/api/debug", { method: "POST", body: form });
+                if (!res.ok) {
+                  const msg = await res.text();
+                  setStatus(`Falha ao gerar debug: ${msg}`);
+                  return;
+                }
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "debug_audit.txt";
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+                setStatus("Debug baixado.");
+              }}
+              disabled={!file}
+            >
+              Debug (TXT)
+            </button>
+          </div>
+        </div>
+      </div>
+
     </main>
   );
 }
