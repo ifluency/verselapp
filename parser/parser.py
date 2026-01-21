@@ -19,7 +19,16 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.lib.utils import ImageReader
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Table,
+    TableStyle,
+    Paragraph,
+    Spacer,
+    Image,
+    PageBreak,
+    KeepTogether,
+)
 
 
 # ===============================
@@ -918,10 +927,8 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
         r = rel_map.get(item_key)
         if not r:
             return
-        lastq = _safe_float(r.get("last_quote"))
-        if lastq is None:
-            return
-        out.append(f"Último licitado (informado): {float_to_preco_txt(lastq, decimals=2)}")
+        # Observação: o relatório final não deve exibir o "último licitado".
+        # Mantemos apenas a indicação do modo e do valor final adotados.
         out.append(f"Modo final adotado: {r.get('modo_final', '')}")
         out.append(f"Valor final adotado: {float_to_preco_txt(_safe_float(r.get('valor_final')), decimals=2)}")
         out.append("")
@@ -1216,12 +1223,535 @@ def _text_to_pdf_bytes(text: str) -> bytes:
 
 
 def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = None) -> bytes:
-    """Gera o PDF 'Memoria de Calculo' (bytes) a partir do dataframe final (Compõe=Sim).
+    """Gera o PDF institucional do "Relatório Comparativo de Valores" (Memória de Cálculo).
 
-    payload pode conter último licitado + ajustes manuais para registrar no PDF.
+    Observações:
+      - Cabeçalho e rodapé seguem o padrão do relatório "Tabela Final de Preços".
+      - Não exibe o "último licitado" (usado apenas como balizador interno).
+      - Inclui: metadados da lista, referência metodológica, sumário inicial e detalhamento por item.
     """
-    txt = build_memoria_calculo_txt(df, payload=payload)
-    return _text_to_pdf_bytes(txt)
+
+    payload = payload or {}
+    lista_meta = payload.get("lista_meta") or payload.get("lista") or {}
+    if not isinstance(lista_meta, dict):
+        lista_meta = {}
+
+    numero_lista = str(lista_meta.get("numero_lista") or "").strip()
+    nome_lista = str(lista_meta.get("nome_lista") or "").strip()
+    processo_sei = str(lista_meta.get("processo_sei") or "").strip()
+    responsavel = str(lista_meta.get("responsavel") or "").strip()
+
+    # ---- helpers de data/hora (PT-BR)
+    months = [
+        "janeiro",
+        "fevereiro",
+        "março",
+        "abril",
+        "maio",
+        "junho",
+        "julho",
+        "agosto",
+        "setembro",
+        "outubro",
+        "novembro",
+        "dezembro",
+    ]
+    now = None
+    if ZoneInfo is not None:
+        try:
+            now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        except Exception:
+            now = None
+    if now is None:
+        now = datetime.now()
+
+    dt_line = f"Relatório gerado em {now.day:02d} de {months[now.month - 1]} de {now.year}, às {now:%H:%M}."
+
+    def _only_item_number(s: str) -> str:
+        if s is None:
+            return ""
+        m = re.search(r"(\d+)", str(s))
+        return m.group(1) if m else str(s)
+
+    def _fmt_dyn_num(x: float | None) -> str:
+        if x is None:
+            return ""
+        x = float(x)
+        dec = 2 if abs(x) >= 1 else 4
+        return f"{x:.{dec}f}".replace(".", ",")
+
+    def _fmt_dyn_brl(x: float | None) -> str:
+        if x is None:
+            return ""
+        x = float(x)
+        dec = 2 if abs(x) >= 1 else 4
+        return float_to_preco_txt(x, decimals=dec)
+
+    def _cv_pct_txt(cv: float | None) -> str:
+        if cv is None:
+            return ""
+        s = f"{(cv * 100.0):.2f}".replace(".", ",")
+        return f"{s}%"
+
+    # ---- carregar logo combinado (base64 -> filesystem)
+    def _load_logo_reader() -> ImageReader | None:
+        try:
+            from parser.logo_b64 import HEADER_LOGO_JPEG_B64
+
+            b64_str = HEADER_LOGO_JPEG_B64 or ""
+            if b64_str:
+                compact = re.sub(r"\s+", "", b64_str)
+                raw = base64.b64decode(compact)
+                return ImageReader(io.BytesIO(raw))
+        except Exception:
+            pass
+
+        try:
+            assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+            for ext in (".jpg", ".jpeg", ".png"):
+                path = os.path.join(assets_dir, f"header{ext}")
+                if os.path.exists(path):
+                    return ImageReader(path)
+        except Exception:
+            pass
+        return None
+
+    def _fit_size(ir: ImageReader, max_w: float, max_h: float) -> tuple[float, float]:
+        w, h = ir.getSize()
+        if not w or not h:
+            return (0.0, 0.0)
+        scale = min(max_w / float(w), max_h / float(h))
+        return (float(w) * scale, float(h) * scale)
+
+    header_ir = _load_logo_reader()
+
+    # ---- construir conteúdo
+    buf = io.BytesIO()
+    page_w, page_h = A4
+
+    # Reservar espaço de cabeçalho/rodapé
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=92,
+        bottomMargin=42,
+        title="Relatório Comparativo de Valores",
+    )
+
+    styles = getSampleStyleSheet()
+
+    style_title = ParagraphStyle(
+        "rcv_title",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        leading=16,
+        alignment=TA_CENTER,
+        spaceAfter=4,
+    )
+    style_subtitle = ParagraphStyle(
+        "rcv_subtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        leading=14,
+        alignment=TA_CENTER,
+        spaceAfter=8,
+    )
+    style_meta = ParagraphStyle(
+        "rcv_meta",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=10,
+        leading=12,
+        alignment=TA_CENTER,
+        spaceAfter=3,
+    )
+    style_body = ParagraphStyle(
+        "rcv_body",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=12,
+        alignment=TA_LEFT,
+    )
+    style_body_bold = ParagraphStyle(
+        "rcv_body_bold",
+        parent=style_body,
+        fontName="Helvetica-Bold",
+    )
+    style_small_grey = ParagraphStyle(
+        "rcv_small_grey",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        alignment=TA_RIGHT,
+        textColor=colors.grey,
+    )
+
+    # Faixa do item (cinza claro + borda)
+    style_item_band = ParagraphStyle(
+        "rcv_item_band",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=10,
+        leading=12,
+        alignment=TA_LEFT,
+    )
+
+    story: list = []
+
+    # ---- cabeçalho/rodapé (canvas)
+    def _on_page(canv: canvas.Canvas, _doc):
+        canv.saveState()
+        try:
+            # Cabeçalho
+            y_top = page_h - 26
+            y_line = page_h - 78
+            if header_ir is not None:
+                w, h = _fit_size(header_ir, max_w=(page_w - _doc.leftMargin - _doc.rightMargin), max_h=40)
+                x = (page_w - w) / 2.0
+                canv.drawImage(header_ir, x, y_top - h, width=w, height=h, mask="auto")
+            else:
+                canv.setFont("Helvetica", 10)
+                canv.drawCentredString(page_w / 2.0, y_top - 18, "HUSM | UFSM | EBSERH")
+
+            canv.setStrokeColor(colors.lightgrey)
+            canv.setLineWidth(1)
+            canv.line(_doc.leftMargin, y_line, page_w - _doc.rightMargin, y_line)
+
+            # Rodapé
+            footer_y = 22
+            canv.setStrokeColor(colors.lightgrey)
+            canv.setLineWidth(0.8)
+            canv.line(_doc.leftMargin, footer_y + 12, page_w - _doc.rightMargin, footer_y + 12)
+
+            canv.setFont("Helvetica", 8)
+            canv.setFillColor(colors.grey)
+            canv.drawCentredString(page_w / 2.0, footer_y, f"Página {canv.getPageNumber()}")
+            canv.drawRightString(page_w - _doc.rightMargin, footer_y, dt_line)
+        except Exception:
+            pass
+        canv.restoreState()
+
+    # ---- título e metadados
+    story.append(Paragraph("RELATÓRIO COMPARATIVO DE VALORES", style_title))
+    story.append(Paragraph("MEMÓRIA DE CÁLCULO", style_subtitle))
+    if numero_lista or nome_lista:
+        story.append(Paragraph(f"LISTA {numero_lista} | {nome_lista}".strip(), style_meta))
+    if processo_sei or responsavel:
+        if processo_sei and responsavel:
+            story.append(Paragraph(f"PROCESSO SEI {processo_sei} | RESPONSÁVEL: {responsavel}".strip(), style_meta))
+        elif processo_sei:
+            story.append(Paragraph(f"PROCESSO SEI {processo_sei}".strip(), style_meta))
+        else:
+            story.append(Paragraph(f"RESPONSÁVEL: {responsavel}".strip(), style_meta))
+    story.append(Spacer(1, 10))
+
+    # ---- referência metodológica
+    story.append(Paragraph("REFERÊNCIA METODOLÓGICA", style_body_bold))
+    story.append(
+        Paragraph(
+            "A estimativa de preços foi calculada conforme as metodologias de exclusão e cálculo descritas no "
+            "<link href='https://www.stj.jus.br/publicacaoinstitucional/index.php/MOP/issue/view/2096/showToc' color='blue'>"
+            "Manual de Orientação: Pesquisa de Preços (4ª edição) do Superior Tribunal de Justiça (STJ)"
+            "</link>. "
+            "A aplicação das regras segue o quantitativo de amostras obtidas no ComprasGOV:"
+            ,
+            style_body,
+        )
+    )
+    story.append(Spacer(1, 6))
+    # regras em lista (mais formal)
+    regras_tbl = Table(
+        [
+            [Paragraph("1) Cotação única: considera-se como cotação única.", style_body)],
+            [Paragraph("2) Entre 2 e 4 cotações: calcula-se o coeficiente de variação (CV). Se CV &lt; 0,25 utiliza-se a média; caso contrário, utiliza-se a mediana.", style_body)],
+            [Paragraph("3) Com 5 ou mais cotações: realiza-se a exclusão de valores destoantes e, em seguida, calcula-se a média dos valores remanescentes.", style_body)],
+            [Paragraph("&nbsp;&nbsp;&nbsp;a) Excluem-se valores excessivamente elevados: (valor / média dos demais) &gt; 1,25.", style_body)],
+            [Paragraph("&nbsp;&nbsp;&nbsp;b) Excluem-se valores inexequíveis: (valor / média dos demais) &lt; 0,75.", style_body)],
+            [Paragraph("&nbsp;&nbsp;&nbsp;c) Calcula-se a média final dos valores restantes.", style_body)],
+        ],
+        colWidths=[doc.width],
+    )
+    regras_tbl.setStyle(
+        TableStyle(
+            [
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    story.append(regras_tbl)
+    story.append(Spacer(1, 12))
+
+    # ---- sumário inicial
+    itens_relatorio = build_itens_relatorio(df, payload=payload) if df is not None else []
+    story.append(Paragraph("SUMÁRIO", style_body_bold))
+    story.append(Spacer(1, 6))
+
+    sum_header = [
+        "ITEM",
+        "CATMAT",
+        "AMOSTRAS INICIAIS",
+        "AMOSTRAS FINAIS",
+        "E.E.",
+        "INEXEQ.",
+        "MODO",
+        "MÉTODO",
+        "VALOR (R$)",
+    ]
+    sum_data = [sum_header]
+    for it in itens_relatorio or []:
+        sum_data.append(
+            [
+                _only_item_number(it.get("item", "")),
+                str(it.get("catmat", "")),
+                str(it.get("n_bruto", "")),
+                str(it.get("n_final_auto", "")),
+                str(it.get("excl_altos", "")),
+                str(it.get("excl_baixos", "")),
+                str(it.get("modo_final", "")),
+                str(it.get("metodo_final", "")),
+                _fmt_dyn_brl(_safe_float(it.get("valor_final"))),
+            ]
+        )
+
+    sum_col_widths = [40, 60, 85, 85, 45, 55, 55, 60, 70]
+    sum_tbl = Table(sum_data, repeatRows=1, colWidths=sum_col_widths, hAlign="CENTER")
+    sum_tbl.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(sum_tbl)
+    story.append(PageBreak())
+
+    # ---- detalhamento por item
+    rel_map = {str(r.get("item")): r for r in itens_relatorio}
+
+    for item, g_raw in df.groupby("Item", sort=False):
+        item_key = str(item)
+        r = rel_map.get(item_key) or {}
+        item_num = _only_item_number(item_key)
+
+        # faixa do item (cinza claro) + borda
+        band_tbl = Table([[Paragraph(f"ITEM {item_num}", style_item_band)]], colWidths=[doc.width])
+        band_tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.whitesmoke),
+                    ("BOX", (0, 0), (-1, -1), 0.6, colors.grey),
+                    ("LINEBELOW", (0, 0), (-1, -1), 1.0, colors.grey),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+
+        blocks: list = [band_tbl, Spacer(1, 10)]
+
+        # preparar valores
+        g = g_raw.copy()
+        g["preco_num"] = g["Preço unitário"].apply(_preco_txt_to_float_for_memoria)
+        vals = g["preco_num"].dropna().astype(float).tolist()
+        n_bruto = int(len(g_raw))
+        n_parse = int(len(vals))
+
+        modo_final = str(r.get("modo_final") or "")
+        metodo_final = str(r.get("metodo_final") or "")
+        valor_final = _safe_float(r.get("valor_final"))
+
+        # bloco resumo do item
+        resumo_pairs = [
+            [Paragraph("Amostras Iniciais", style_body_bold), Paragraph(str(n_bruto), style_body)],
+            [Paragraph("Amostras com valor numérico", style_body_bold), Paragraph(str(n_parse), style_body)],
+        ]
+        if modo_final:
+            resumo_pairs.append([Paragraph("Modo final adotado", style_body_bold), Paragraph(modo_final, style_body)])
+        if metodo_final:
+            resumo_pairs.append([Paragraph("Método", style_body_bold), Paragraph(metodo_final, style_body)])
+        if valor_final is not None:
+            resumo_pairs.append([Paragraph("Valor Final", style_body_bold), Paragraph(_fmt_dyn_brl(valor_final), style_body)])
+
+        resumo_tbl = Table(resumo_pairs, colWidths=[160, doc.width - 160])
+        resumo_tbl.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
+        blocks.append(resumo_tbl)
+        blocks.append(Spacer(1, 8))
+
+        if n_parse == 0:
+            blocks.append(Paragraph("Nenhum valor conseguiu ser convertido para número.", style_body))
+            blocks.append(Spacer(1, 10))
+            story.append(KeepTogether(blocks))
+            continue
+
+        # lista de valores iniciais (dinâmica)
+        vals_txt = ", ".join([_fmt_dyn_num(v) for v in vals])
+        blocks.append(Paragraph("Valores iniciais considerados no cálculo:", style_body_bold))
+        blocks.append(Paragraph(vals_txt, style_body))
+        blocks.append(Spacer(1, 8))
+
+        # casos
+        if n_parse == 1:
+            blocks.append(Paragraph(f"Valor único: {_fmt_dyn_num(vals[0])}", style_body))
+            blocks.append(Spacer(1, 10))
+            story.append(KeepTogether(blocks))
+            continue
+
+        if n_parse < 5:
+            cvv = _coef_var(vals)
+            mean_v = sum(vals) / len(vals)
+            med_v = float(pd.Series(vals).median())
+            blocks.append(Paragraph(f"Média: {_fmt_dyn_num(mean_v)}", style_body))
+            blocks.append(Paragraph(f"Mediana: {_fmt_dyn_num(med_v)}", style_body))
+            blocks.append(Paragraph(f"Coeficiente de Variação (CV): {_cv_pct_txt(cvv)}", style_body))
+            blocks.append(Spacer(1, 10))
+            story.append(KeepTogether(blocks))
+            continue
+
+        rep = _audit_item(vals, upper=1.25, lower=0.75)
+
+        # excessivamente elevados
+        blocks.append(Paragraph("Preços excluídos por serem Excessivamente Elevados:", style_body_bold))
+        blocks.append(Paragraph(f"Quantidade: {len(rep.get('excluidos_altos') or [])}", style_body))
+        for rr in rep.get("excluidos_altos") or []:
+            blocks.append(
+                Paragraph(
+                    f"Valor={_fmt_dyn_num(rr.get('v'))} | Média dos demais={_fmt_dyn_num(rr.get('m_outros'))} | Proporção={rr.get('ratio', 0):.4f}",
+                    style_body,
+                )
+            )
+        blocks.append(Spacer(1, 6))
+
+        blocks.append(Paragraph("Mantidos após exclusão dos Excessivamente Elevados:", style_body_bold))
+        blocks.append(Paragraph(", ".join([_fmt_dyn_num(v) for v in rep.get("apos_alto") or []]), style_body))
+        blocks.append(Spacer(1, 8))
+
+        # inexequíveis
+        blocks.append(Paragraph("Preços excluídos por serem Inexequíveis:", style_body_bold))
+        blocks.append(Paragraph(f"Quantidade: {len(rep.get('excluidos_baixos') or [])}", style_body))
+        for rr in rep.get("excluidos_baixos") or []:
+            blocks.append(
+                Paragraph(
+                    f"Valor={_fmt_dyn_num(rr.get('v'))} | Média dos demais={_fmt_dyn_num(rr.get('m_outros'))} | Proporção={rr.get('ratio', 0):.4f}",
+                    style_body,
+                )
+            )
+        blocks.append(Spacer(1, 6))
+
+        finais = rep.get("finais") or []
+        blocks.append(Paragraph("Valores considerados no cálculo final:", style_body_bold))
+        blocks.append(Paragraph(", ".join([_fmt_dyn_num(v) for v in finais]), style_body))
+        blocks.append(Paragraph(f"Número de valores considerados no cálculo final: {len(finais)}", style_body))
+        blocks.append(Paragraph(f"Média final: {_fmt_dyn_num(rep.get('media_final'))}", style_body))
+        blocks.append(Paragraph(f"Coeficiente de Variação final: {_cv_pct_txt(rep.get('cv_final'))}", style_body))
+        blocks.append(Spacer(1, 8))
+
+        # bloco manual, se existir
+        if str(r.get("modo_final") or "") == "Manual":
+            blocks.append(Paragraph("ANÁLISE MANUAL", style_body_bold))
+            blocks.append(Spacer(1, 4))
+            vals_brutos = r.get("valores_brutos") or []
+            fontes_brutos = r.get("fontes_brutos") or []
+            manual = r.get("manual") or {}
+            included = set()
+            for idx in manual.get("included_indices") or []:
+                try:
+                    included.add(int(idx))
+                except Exception:
+                    pass
+
+            # construir tabela de valores brutos com fonte (ordenados por valor)
+            rows = []
+            for i, v in enumerate(vals_brutos):
+                fonte = fontes_brutos[i] if i < len(fontes_brutos) else ""
+                rows.append({"idx": i, "idx1": i + 1, "valor": float(v), "fonte": str(fonte)})
+            rows.sort(key=lambda x: x["valor"])
+
+            man_table = [["ÍNDICE", "VALOR", "FONTE", "INCLUÍDO"]]
+            for rr in rows:
+                man_table.append(
+                    [
+                        str(rr["idx1"]),
+                        _fmt_dyn_num(rr["valor"]),
+                        rr["fonte"],
+                        "Sim" if rr["idx"] in included else "Não",
+                    ]
+                )
+            mt = Table(man_table, repeatRows=1, colWidths=[50, 70, doc.width - 50 - 70 - 60, 60])
+            mt.setStyle(
+                TableStyle(
+                    [
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, 0), 8),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                        ("FONTSIZE", (0, 1), (-1, -1), 8),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ]
+                )
+            )
+            blocks.append(mt)
+            blocks.append(Spacer(1, 6))
+
+            mean_m = _safe_float(manual.get("mean"))
+            median_m = _safe_float(manual.get("median"))
+            cv_m = _safe_float(manual.get("cv"))
+            valor_m = _safe_float(manual.get("valor_final"))
+            blocks.append(Paragraph(f"Média (incluídos): {_fmt_dyn_num(mean_m)}", style_body))
+            blocks.append(Paragraph(f"Mediana (incluídos): {_fmt_dyn_num(median_m)}", style_body))
+            blocks.append(Paragraph(f"Coeficiente de Variação (incluídos): {_cv_pct_txt(cv_m)}", style_body))
+            blocks.append(Paragraph(f"Valor Final (manual): {_fmt_dyn_brl(valor_m)}", style_body))
+
+            just_code = str(manual.get("justificativa_codigo") or "").strip()
+            just_txt = str(manual.get("justificativa_texto") or "").strip()
+            if just_code:
+                blocks.append(Paragraph(f"Justificativa (código): {just_code}", style_body))
+            if just_txt:
+                blocks.append(Paragraph(f"Justificativa: {just_txt}", style_body))
+
+        blocks.append(Spacer(1, 12))
+        story.append(KeepTogether(blocks))
+
+    doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
+    buf.seek(0)
+    return buf.read()
 
 
 def _fmt_brl(x: float | None) -> str:
@@ -1442,7 +1972,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     # ---- Termo de referência metodológica (curto e formal)
     story.append(
         Paragraph(
-            "<b>Referência Metodológica</b>: a estimativa de preços foi calculada conforme as metodologias de exclusão e cálculo descritas no Manual de Orientação: Pesquisa de Preços (4ª edição) do Superior Tribunal de Justiça (STJ), com detalhamento no documento Memória de Cálculo anexo.",
+            "<b>Referência Metodológica</b>: a estimativa de preços foi calculada conforme as metodologias de exclusão e cálculo descritas no Manual de Orientação: Pesquisa de Preços (4ª edição) do Superior Tribunal de Justiça (STJ), com detalhamento no Relatório Comparativo de Valores anexo.",
             style_normal,
         )
     )
