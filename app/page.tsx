@@ -124,6 +124,11 @@ export default function Page() {
   const [modalJustCode, setModalJustCode] = useState<string>("");
   const [modalJustText, setModalJustText] = useState<string>("");
 
+  // UI flags
+  const SHOW_DEBUG = false; // ***desativado na UI (mantém a funcionalidade no backend)***
+  const focusChooseFile = !file;
+  const focusPreview = !!file && !previewReady;
+
   // Ao trocar o arquivo, reseta o fluxo e reabilita a prévia
   useEffect(() => {
     setPreview([]);
@@ -424,7 +429,7 @@ export default function Page() {
         style={{
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "flex-end",
+          alignItems: "center",
           gap: 12,
           flexWrap: "wrap",
           padding: "10px 0 6px",
@@ -436,6 +441,14 @@ export default function Page() {
           <div style={{ marginTop: 4, color: "#4b5563" }}>
             Formação de preços de referência com base em pesquisa do ComprasGOV
           </div>
+        </div>
+
+        <div style={{ marginLeft: "auto" }}>
+          <img
+            src="/header_logos.png"
+            alt="Logos institucionais"
+            style={{ height: 44, width: "auto", display: "block" }}
+          />
         </div>
       </header>
 
@@ -493,7 +506,11 @@ export default function Page() {
             style={{ display: "none" }}
           />
 
-          <label htmlFor="pdfInput" className="btn fileBtn" title="Escolher PDF">
+          <label
+            htmlFor="pdfInput"
+            className={`btn ${focusChooseFile ? "btnCta" : "fileBtn"}`}
+            title="Escolher PDF"
+          >
             Escolher arquivo
           </label>
 
@@ -504,7 +521,7 @@ export default function Page() {
           <button
             onClick={loadPreview}
             disabled={!file || loadingPreview || previewReady}
-            className={`btn ${previewReady ? "btnGhost" : "btnPrimary"}`}
+            className={`btn ${focusPreview ? "btnCta" : previewReady ? "btnGhost" : "btnPrimary"}`}
             title={previewReady ? "Prévia já gerada (troque o arquivo para gerar novamente)" : "Gerar prévia"}
           >
             {loadingPreview ? "Carregando..." : "Gerar prévia"}
@@ -1003,8 +1020,9 @@ export default function Page() {
               {loadingGenerate ? "Gerando..." : canGenerate ? "Baixar ZIP (PDFs)" : "Gerar ZIP (PDFs)"}
             </button>
 
-            <button
-              onClick={async () => {
+            {SHOW_DEBUG && (
+              <button
+                onClick={async () => {
                 if (!file) {
                   setStatus("Selecione um PDF primeiro.");
                   return;
@@ -1029,11 +1047,12 @@ export default function Page() {
                 window.URL.revokeObjectURL(url);
                 setStatus("Debug baixado.");
               }}
-              disabled={!file}
-              className="btn"
-            >
-              Debug (TXT)
-            </button>
+                disabled={!file}
+                className="btn"
+              >
+                Debug (TXT)
+              </button>
+            )}
           </div>
         </div>
       </div>
