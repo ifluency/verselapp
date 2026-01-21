@@ -470,7 +470,7 @@ def build_itens_relatorio(
         last_quote = _safe_float(last_quote_val)
 
         # --------- decisão final (auto vs manual)
-        modo = "Auto"
+        modo = "Automático"
         valor_final = valor_auto
         metodo_final = metodo_auto
         valores_finais = valores_finais_auto[:]
@@ -542,6 +542,7 @@ def build_itens_relatorio(
                 "valor_auto": valor_auto,
                 "metodo_auto": metodo_auto,
                 "n_final_auto": int(len(valores_finais_auto)),
+                "n_final_final": int(len(valores_finais)),
                 "excl_altos": int(excl_alto),
                 "excl_baixos": int(excl_baixo),
                 "cv_auto": cv_final,
@@ -653,7 +654,7 @@ def build_excel_bytes(df: pd.DataFrame, itens_relatorio: list[dict]) -> bytes:
                 "Item": it.get("item"),
                 "Catmat": it.get("catmat"),
                 "Número de entradas iniciais": it.get("n_bruto"),
-                "Número de entradas finais": it.get("n_final_auto"),
+                "Número de entradas finais": it.get("n_final_final") or it.get("n_final_auto"),
                 "Nº desconsiderados (Excessivamente Elevados)": it.get("excl_altos"),
                 "Nº desconsiderados (Inexequíveis)": it.get("excl_baixos"),
                 "Valor calculado (R$)": float_to_preco_txt(_safe_float(it.get("valor_auto")), decimals=2),
@@ -1513,7 +1514,7 @@ def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = Non
                 _only_item_number(it.get("item", "")),
                 str(it.get("catmat", "")),
                 str(it.get("n_bruto", "")),
-                str(it.get("n_final_auto", "")),
+                str(it.get("n_final_final") or it.get("n_final_auto", "")),
                 str(it.get("excl_altos", "")),
                 str(it.get("excl_baixos", "")),
                 str(it.get("modo_final", "")),
@@ -1584,8 +1585,7 @@ def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = Non
         # bloco resumo do item
         resumo_pairs = [
             [Paragraph("Amostras Iniciais", style_body_bold), Paragraph(str(n_bruto), style_body)],
-            [Paragraph("Amostras com valor numérico", style_body_bold), Paragraph(str(n_parse), style_body)],
-        ]
+                    ]
         if modo_final:
             resumo_pairs.append([Paragraph("Modo final adotado", style_body_bold), Paragraph(modo_final, style_body)])
         if metodo_final:
@@ -1615,9 +1615,9 @@ def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = Non
             continue
 
         # lista de valores iniciais (dinâmica)
-        vals_txt = ", ".join([_fmt_dyn_num(v) for v in vals])
+        vals_txt = " | ".join([_fmt_dyn_num(v) for v in vals])
         blocks.append(Paragraph("Valores iniciais considerados no cálculo:", style_body_bold))
-        blocks.append(Paragraph(vals_txt, style_body))
+        blocks.append(Paragraph(f"<i>{vals_txt}</i>", style_body))
         blocks.append(Spacer(1, 8))
 
         # casos
@@ -1653,7 +1653,8 @@ def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = Non
         blocks.append(Spacer(1, 6))
 
         blocks.append(Paragraph("Mantidos após exclusão dos Excessivamente Elevados:", style_body_bold))
-        blocks.append(Paragraph(", ".join([_fmt_dyn_num(v) for v in rep.get("apos_alto") or []]), style_body))
+        _apos_alto_txt = " | ".join([_fmt_dyn_num(v) for v in rep.get("apos_alto") or []])
+        blocks.append(Paragraph(f"<i>{_apos_alto_txt}</i>", style_body))
         blocks.append(Spacer(1, 8))
 
         # inexequíveis
@@ -1670,7 +1671,9 @@ def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = Non
 
         finais = rep.get("finais") or []
         blocks.append(Paragraph("Valores considerados no cálculo final:", style_body_bold))
-        blocks.append(Paragraph(", ".join([_fmt_dyn_num(v) for v in finais]), style_body))
+        _finais_txt = " | ".join([_fmt_dyn_num(v) for v in finais])
+        blocks.append(Paragraph(f"<i>{_finais_txt}</i>", style_body))
+        blocks.append(Spacer(1, 4))
         blocks.append(Paragraph(f"Número de valores considerados no cálculo final: {len(finais)}", style_body))
         blocks.append(Paragraph(f"Média final: {_fmt_dyn_num(rep.get('media_final'))}", style_body))
         blocks.append(Paragraph(f"Coeficiente de Variação final: {_cv_pct_txt(rep.get('cv_final'))}", style_body))
@@ -1871,7 +1874,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         leftMargin=24,
         rightMargin=24,
         topMargin=78,
-        bottomMargin=18,
+        bottomMargin=42,
         title="Tabela Final de Preços",
     )
 
@@ -1997,7 +2000,7 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
         item_num = _only_item_number(it.get("item", ""))
         catmat = str(it.get("catmat", ""))
         ai = str(it.get("n_bruto", ""))
-        af = str(it.get("n_final_auto", ""))
+        af = str(it.get("n_final_final") or it.get("n_final_auto", ""))
         ee = str(it.get("excl_altos", ""))
         inex = str(it.get("excl_baixos", ""))
         modo = str(it.get("modo_final", ""))
@@ -2042,19 +2045,29 @@ def build_pdf_tabela_comparativa_bytes(itens_relatorio: list[dict], meta: dict |
     )
 
     story.append(t)
-    story.append(Spacer(1, 28))
+    story.append(Spacer(1, 12))
 
+    # ---- Cabeçalho + rodapé (canvas)
+    def _on_page(canv: canvas.Canvas, _doc):
+        _draw_header(canv, _doc)
+        try:
+            footer_y = 20
+            canv.saveState()
+            canv.setStrokeColor(colors.lightgrey)
+            canv.setLineWidth(0.8)
+            canv.line(_doc.leftMargin, footer_y + 10, page_w - _doc.rightMargin, footer_y + 10)
+            canv.setFont("Helvetica", 8)
+            canv.setFillColor(colors.grey)
+            canv.drawCentredString(page_w / 2.0, footer_y, f"Página {canv.getPageNumber()}")
+            canv.drawRightString(page_w - _doc.rightMargin, footer_y, dt_line)
+            canv.restoreState()
+        except Exception:
+            try:
+                canv.restoreState()
+            except Exception:
+                pass
 
-    # ---- Rodapé institucional + data
-    story.append(
-        Paragraph(
-            "HOSPITAL UNIVERSITÁRIO DE SANTA MARIA • EBSERH • UNIVERSIDADE FEDERAL DE SANTA MARIA",
-            style_small_center,
-        )
-    )
-    story.append(Spacer(1, 6))
-    story.append(Paragraph(dt_line, style_date))
+    doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
 
-    doc.build(story, onFirstPage=_draw_header, onLaterPages=_draw_header)
     buf.seek(0)
     return buf.read()
