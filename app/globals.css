@@ -16,3 +16,72 @@ h1, h2, h3 {
 * {
   box-sizing: border-box;
 }
+
+/* UI institucional: botões */
+.btn {
+  appearance: none;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #111827;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.btn:hover {
+  background: #f9fafb;
+}
+
+.btn:active {
+  transform: translateY(0.5px);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btnPrimary {
+  background: #111827;
+  border-color: #111827;
+  color: #ffffff;
+}
+
+.btnPrimary:hover {
+  background: #0b1220;
+}
+
+/* CTA do ZIP */
+.btnCta {
+  background: #065f46;
+  border-color: #065f46;
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(6, 95, 70, 0.22);
+}
+
+.btnCta:hover {
+  background: #064e3b;
+  border-color: #064e3b;
+}
+
+.btnGhost {
+  background: transparent;
+}
+
+/* Input de arquivo como botão */
+.fileBtn {
+  border: 1px dashed #94a3b8;
+  background: #f9fafb;
+}
+
+.fileBtn:hover {
+  background: #f3f4f6;
+}
