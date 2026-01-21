@@ -1,15 +1,24 @@
 import io
 import cgi
 import json
+import re
 import traceback
 import zipfile
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler
 
+
+
+def _safe_slug(s: str) -> str:
+    s = (s or '').strip()
+    # Mantém caracteres seguros para nomes de arquivo
+    s = re.sub(r'[^0-9A-Za-z._-]+', '_', s)
+    s = re.sub(r'_+', '_', s).strip('_')
+    return s or 'SEM_NUMERO'
+
 from parser.parser import (
     process_pdf_bytes,
     build_itens_relatorio,
-    build_excel_bytes,
     build_memoria_calculo_pdf_bytes,
     build_pdf_tabela_comparativa_bytes,
     PdfIncompatibilityError,
@@ -62,8 +71,6 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             itens = build_itens_relatorio(df, payload=payload)
-
-            xlsx_bytes = build_excel_bytes(df, itens)
             pdf_memoria_bytes = build_memoria_calculo_pdf_bytes(df, payload=payload)
             # Meta da lista (título do PDF comparativo)
             lista_meta = payload.get("lista_meta") or payload.get("lista") or {}
@@ -73,14 +80,17 @@ class handler(BaseHTTPRequestHandler):
 
             zip_out = io.BytesIO()
             with zipfile.ZipFile(zip_out, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("relatorio_precos_compoe_sim.xlsx", xlsx_bytes)
-                zf.writestr("Tabela_Final_de_Precos.pdf", pdf_comp_bytes)
-                zf.writestr("Relatorio_Comparativo_de_Valores.pdf", pdf_memoria_bytes)
+                numero = _safe_slug(str(lista_meta.get("numero_lista") or lista_meta.get("numero") or ""))
+                pdf1_name = f"Tabela_Final_de_Precos_{numero}.pdf"
+                pdf2_name = f"Relatorio_Comparativo_de_Valores_{numero}.pdf"
+                zf.writestr(pdf1_name, pdf_comp_bytes)
+                zf.writestr(pdf2_name, pdf_memoria_bytes)
 
             zip_out.seek(0)
             zip_bytes = zip_out.read()
 
-            filename = "resultado.zip"
+            numero = _safe_slug(str(lista_meta.get("numero_lista") or lista_meta.get("numero") or ""))
+            filename = f"Formacao_Precos_Referencia_Lista_{numero}.zip"
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
