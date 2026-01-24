@@ -64,6 +64,9 @@ class handler(BaseHTTPRequestHandler):
                         "excl_baixos": int(it.get("excl_baixos") or 0),
                         "valor_calculado": it.get("valor_auto"),
                         "valores_brutos": pares,
+                        "auto_keep_idx": it.get("auto_keep_idx") or [],
+                        "auto_excl_altos_idx": it.get("auto_excl_altos_idx") or [],
+                        "auto_excl_baixos_idx": it.get("auto_excl_baixos_idx") or [],
                     }
                 )
 
