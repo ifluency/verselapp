@@ -93,6 +93,19 @@ export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>("");
 
+  // Permite negrito em mensagens vindas do backend (somente <b>/<strong>).
+  function sanitizeStatusHtml(s: string): string {
+    if (!s) return "";
+    let esc = s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    // Re-habilita apenas <b> e <strong> (incluindo fechamento)
+    esc = esc.replace(/&lt;(\/?)(\s*)(b|strong)(\s*)&gt;/gi, "<$1$3>");
+    esc = esc.replace(/\n/g, "<br/>");
+    return esc;
+  }
+
   // Desativa "Gerar prévia" depois de gerar (reabilita ao trocar o arquivo)
   const [previewReady, setPreviewReady] = useState(false);
 
@@ -538,7 +551,12 @@ export default function Page() {
         </div>
       </div>
 
-{status && <p style={{ marginTop: 12 }}>{status}</p>}
+      {status && (
+        <p
+          style={{ marginTop: 12 }}
+          dangerouslySetInnerHTML={{ __html: sanitizeStatusHtml(status) }}
+        />
+      )}
 
       {preview.length > 0 && (
         <div style={{ marginTop: 16, overflowX: "hidden" }}>
