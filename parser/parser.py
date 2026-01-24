@@ -325,6 +325,59 @@ def filtrar_outliers_por_ratio(vals: list[float], upper: float = 1.25, lower: fl
     return keep_baixo, excl_alto, excl_baixo
 
 
+def filtrar_outliers_por_ratio_com_indices(
+    pares: list[tuple[int, float]],
+    upper: float = 1.25,
+    lower: float = 0.75,
+):
+    """Versão com índices (para UI/ajuste manual).
+
+    Entrada: lista de (idx_original, valor)
+    Retorna:
+      - pares_finais (mantidos)
+      - excluidos_altos_idx (excessivamente elevados)
+      - excluidos_baixos_idx (inexequíveis)
+    """
+    if len(pares) < 2:
+        return pares[:], [], []
+
+    # PASSO alto
+    keep_alto: list[tuple[int, float]] = []
+    excl_altos: list[int] = []
+    for i, (idx, v) in enumerate(pares):
+        others = [vv for j, (_, vv) in enumerate(pares) if j != i]
+        m = sum(others) / len(others) if others else None
+        if m is None or m == 0:
+            keep_alto.append((idx, v))
+            continue
+        ratio = v / m
+        if ratio <= upper:
+            keep_alto.append((idx, v))
+        else:
+            excl_altos.append(idx)
+
+    if len(keep_alto) < 2:
+        return keep_alto, excl_altos, []
+
+    # PASSO baixo
+    keep_baixo: list[tuple[int, float]] = []
+    excl_baixos: list[int] = []
+    for i, (idx, v) in enumerate(keep_alto):
+        others = [vv for j, (_, vv) in enumerate(keep_alto) if j != i]
+        m = sum(others) / len(others) if others else None
+        if m is None or m == 0:
+            keep_baixo.append((idx, v))
+            continue
+        ratio = v / m
+        if ratio >= lower:
+            keep_baixo.append((idx, v))
+        else:
+            excl_baixos.append(idx)
+
+    return keep_baixo, excl_altos, excl_baixos
+
+
+
 def _median(vals: list[float]) -> float | None:
     if not vals:
         return None
@@ -454,12 +507,23 @@ def build_itens_relatorio(
                 else:
                     metodo_auto = "Mediana"
                     valor_auto = med
+            # Índices do cálculo automático (para UI/ajuste manual)
+            auto_excl_altos_idx: list[int] = []
+            auto_excl_baixos_idx: list[int] = []
+            auto_keep_idx: list[int] = list(range(len(valores_brutos)))
+
             valores_finais_auto = valores_brutos[:]
             n_final = len(valores_finais_auto)
             cv_final = cv
         else:
-            vals_filtrados, excl_alto, excl_baixo = filtrar_outliers_por_ratio(valores_brutos, upper=1.25, lower=0.75)
-            valores_finais_auto = vals_filtrados[:]
+            pares = [(i, v) for i, v in enumerate(valores_brutos)]
+            keep_pairs, auto_excl_altos_idx, auto_excl_baixos_idx = filtrar_outliers_por_ratio_com_indices(
+                pares, upper=1.25, lower=0.75
+            )
+            auto_keep_idx = [i for i, _ in keep_pairs]
+            excl_alto = len(auto_excl_altos_idx)
+            excl_baixo = len(auto_excl_baixos_idx)
+            valores_finais_auto = [v for _, v in keep_pairs]
             n_final = len(valores_finais_auto)
             valor_auto = _mean(valores_finais_auto) if n_final > 0 else None
             metodo_auto = "Média"
@@ -539,6 +603,9 @@ def build_itens_relatorio(
                 "n_brutos_numericos": int(len(valores_brutos)),
                 "valores_brutos": valores_brutos,
                 "fontes_brutos": fontes_brutos,
+                "auto_keep_idx": auto_keep_idx,
+                "auto_excl_altos_idx": auto_excl_altos_idx,
+                "auto_excl_baixos_idx": auto_excl_baixos_idx,
                 "valor_auto": valor_auto,
                 "metodo_auto": metodo_auto,
                 "n_final_auto": int(len(valores_finais_auto)),
@@ -964,17 +1031,20 @@ def build_memoria_calculo_txt(df: pd.DataFrame, payload: dict | None = None) -> 
         mean = _safe_float(manual.get("mean"))
         median = _safe_float(manual.get("median"))
         cvv = _safe_float(manual.get("cv"))
-        out.append(f"Média (dos incluídos): {_num_dyn(mean)}" if mean is not None else "Média (dos incluídos):")
-        out.append(f"Mediana (dos incluídos): {_num_dyn(median)}" if median is not None else "Mediana (dos incluídos):")
-        out.append(f"Coeficiente de Variação (dos incluídos): {_cv_pct_txt(cvv)}")
-        out.append(f"Valor Final (manual): {float_to_preco_txt(_safe_float(manual.get('valor_final')), decimals=2)}")
+        out.append(
+            f"Média (inclusão manual): {_num_dyn(mean)}" if mean is not None else "Média (inclusão manual):"
+        )
+        out.append(
+            f"Mediana (inclusão manual): {_num_dyn(median)}" if median is not None else "Mediana (inclusão manual):"
+        )
+        out.append(f"Coeficiente de Variação (inclusão manual): {_cv_pct_txt(cvv)}")
+        out.append(
+            f"Valor Final (inclusão manual): {float_to_preco_txt(_safe_float(manual.get('valor_final')), decimals=2)}"
+        )
 
-        just_code = (manual.get("justificativa_codigo") or "").strip()
         just_txt = (manual.get("justificativa_texto") or "").strip()
-        if just_code:
-            out.append(f"Justificativa (código): {just_code}")
         if just_txt:
-            out.append(f"Justificativa (texto): {just_txt}")
+            out.append(f"Justificativa de análise manual: {just_txt}")
         out.append("")
 
     # Titulo (duas linhas) com fonte maior
@@ -1737,17 +1807,16 @@ def build_memoria_calculo_pdf_bytes(df: pd.DataFrame, payload: dict | None = Non
             median_m = _safe_float(manual.get("median"))
             cv_m = _safe_float(manual.get("cv"))
             valor_m = _safe_float(manual.get("valor_final"))
-            blocks.append(Paragraph(f"Média (incluídos): {_fmt_dyn_num(mean_m)}", style_body))
-            blocks.append(Paragraph(f"Mediana (incluídos): {_fmt_dyn_num(median_m)}", style_body))
-            blocks.append(Paragraph(f"Coeficiente de Variação (incluídos): {_cv_pct_txt(cv_m)}", style_body))
-            blocks.append(Paragraph(f"Valor Final (manual): {_fmt_dyn_brl(valor_m)}", style_body))
+            blocks.append(Paragraph(f"Média (inclusão manual): {_fmt_dyn_num(mean_m)}", style_body))
+            blocks.append(Paragraph(f"Mediana (inclusão manual): {_fmt_dyn_num(median_m)}", style_body))
+            blocks.append(
+                Paragraph(f"Coeficiente de Variação (inclusão manual): {_cv_pct_txt(cv_m)}", style_body)
+            )
+            blocks.append(Paragraph(f"Valor Final (inclusão manual): {_fmt_dyn_brl(valor_m)}", style_body))
 
-            just_code = str(manual.get("justificativa_codigo") or "").strip()
             just_txt = str(manual.get("justificativa_texto") or "").strip()
-            if just_code:
-                blocks.append(Paragraph(f"Justificativa (código): {just_code}", style_body))
             if just_txt:
-                blocks.append(Paragraph(f"Justificativa: {just_txt}", style_body))
+                blocks.append(Paragraph(f"Justificativa de análise manual: {just_txt}", style_body))
 
         blocks.append(Spacer(1, 12))
         story.append(KeepTogether(blocks))
