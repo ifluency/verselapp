@@ -61,14 +61,14 @@ def _validate_relatorio_resumido_or_raise(pdf: pdfplumber.PDF):
 
     if has_detalhado:
         raise PdfIncompatibilityError(
-            "PDF incorreto: você carregou o Relatório Detalhado. "
-            "Por favor, utilize a versão Relatório Resumido."
+            "Você está utilizando o Relatório Detalhado. Por favor, faça o upload do "
+            "<b>Relatório Resumido</b>."
         )
 
     raise PdfIncompatibilityError(
-        "PDF incompatível: não foi possível identificar 'Relatório Resumido' nem 'Relatório Detalhado' "
-        "no início do documento. Verifique se o arquivo enviado é o relatório resumido do ComprasGOV."
+        "PDF não é compatível. Por favor, faça o upload do <b>Relatório Resumido</b>."
     )
+
 
 RE_ITEM = re.compile(r"^Item\s*:?\s*(\d+)\b", re.IGNORECASE)
 RE_CATMAT = re.compile(r"(\d{6})\s*-\s*")
