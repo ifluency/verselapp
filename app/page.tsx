@@ -770,12 +770,7 @@ export default function Page() {
                               color: "white",
                               border: "1px solid #1b5e20",
                               fontWeight: 700,
-                              background: modalAutoExclAltos.has(e.idx)
-                          ? "#fdecea"
-                          : modalAutoExclBaixos.has(e.idx)
-                          ? "#fff7cc"
-                          : undefined,
-                        cursor: "pointer",
+                              cursor: "pointer",
                             };
                           }
                           if (r.adjustColor === "red") {
@@ -784,12 +779,7 @@ export default function Page() {
                               color: "white",
                               border: "1px solid #8e0000",
                               fontWeight: 700,
-                              background: modalAutoExclAltos.has(e.idx)
-                          ? "#fdecea"
-                          : modalAutoExclBaixos.has(e.idx)
-                          ? "#fff7cc"
-                          : undefined,
-                        cursor: "pointer",
+                              cursor: "pointer",
                             };
                           }
                           // yellow
@@ -798,12 +788,7 @@ export default function Page() {
                             color: "#000",
                             border: "1px solid #c9a100",
                             fontWeight: 700,
-                            background: modalAutoExclAltos.has(e.idx)
-                          ? "#fdecea"
-                          : modalAutoExclBaixos.has(e.idx)
-                          ? "#fff7cc"
-                          : undefined,
-                        cursor: "pointer",
+                            cursor: "pointer",
                           };
                         })()}
                       >
