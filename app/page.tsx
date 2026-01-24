@@ -11,6 +11,9 @@ type PreviewItem = {
   excl_baixos: number;
   valor_calculado: number | null;
   valores_brutos: { idx: number; valor: number; fonte: string }[];
+  auto_keep_idx: number[];
+  auto_excl_altos_idx: number[];
+  auto_excl_baixos_idx: number[];
 };
 
 type ManualOverride = {
@@ -79,11 +82,12 @@ function pct2(x: number | null): string {
 }
 
 const JUST_OPTIONS: Record<string, string> = {
-  OUTLIERS_MANUAL: "Exclusão manual de valores destoantes (outliers) a partir da análise dos valores brutos.",
-  FONTE_PRIORIZADA: "Priorização de fontes mais confiáveis (ex.: compras anteriores/homologações) frente a cotações menos consistentes.",
-  MERCADO_OSCILACAO: "Oscilação de mercado identificada; adotado critério mais aderente ao contexto recente de aquisição.",
-  OUTRO: "",
+  PADRAO_1:
+    "Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM para evitar a fixação de preço estimado potencialmente inexequível sob risco de fracasso do certame.",
+  PADRAO_2:
+    "Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM e discrepante da cotação do produto, cuja comercialização é exclusiva de fornecedor específico.",
 };
+
 
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
@@ -156,6 +160,9 @@ export default function Page() {
     return m;
   }, [modalItem]);
 
+  const modalAutoExclAltos = useMemo(() => new Set(modalItem?.auto_excl_altos_idx || []), [modalItem]);
+  const modalAutoExclBaixos = useMemo(() => new Set(modalItem?.auto_excl_baixos_idx || []), [modalItem]);
+
   const modalSortedEntries = useMemo(() => {
     if (!modalItem) return [] as { idx: number; valor: number; fonte: string }[];
     return [...modalItem.valores_brutos].sort((a, b) => a.valor - b.valor);
@@ -198,9 +205,11 @@ export default function Page() {
 
     setModalItemId(item.item);
 
-    // Inicializa com tudo selecionado
-    const allIdx = item.valores_brutos.map((e) => e.idx);
-    setModalSelected(allIdx);
+    // Inicializa com seleção sugerida pelo cálculo automático (mantidos)
+    const suggestedIdx = (item.auto_keep_idx && item.auto_keep_idx.length)
+      ? item.auto_keep_idx
+      : item.valores_brutos.map((e) => e.idx);
+    setModalSelected(suggestedIdx);
 
     // Se já existe override, carrega
     if (existing) {
@@ -761,7 +770,12 @@ export default function Page() {
                               color: "white",
                               border: "1px solid #1b5e20",
                               fontWeight: 700,
-                              cursor: "pointer",
+                              background: modalAutoExclAltos.has(e.idx)
+                          ? "#fdecea"
+                          : modalAutoExclBaixos.has(e.idx)
+                          ? "#fff7cc"
+                          : undefined,
+                        cursor: "pointer",
                             };
                           }
                           if (r.adjustColor === "red") {
@@ -770,7 +784,12 @@ export default function Page() {
                               color: "white",
                               border: "1px solid #8e0000",
                               fontWeight: 700,
-                              cursor: "pointer",
+                              background: modalAutoExclAltos.has(e.idx)
+                          ? "#fdecea"
+                          : modalAutoExclBaixos.has(e.idx)
+                          ? "#fff7cc"
+                          : undefined,
+                        cursor: "pointer",
                             };
                           }
                           // yellow
@@ -779,7 +798,12 @@ export default function Page() {
                             color: "#000",
                             border: "1px solid #c9a100",
                             fontWeight: 700,
-                            cursor: "pointer",
+                            background: modalAutoExclAltos.has(e.idx)
+                          ? "#fdecea"
+                          : modalAutoExclBaixos.has(e.idx)
+                          ? "#fff7cc"
+                          : undefined,
+                        cursor: "pointer",
                           };
                         })()}
                       >
@@ -852,6 +876,11 @@ export default function Page() {
                         padding: "8px 10px",
                         borderBottom:
                           rowIdx === modalSortedEntries.length - 1 ? "none" : "1px solid #eee",
+                        background: modalAutoExclAltos.has(e.idx)
+                          ? "#fdecea"
+                          : modalAutoExclBaixos.has(e.idx)
+                          ? "#fff7cc"
+                          : undefined,
                         cursor: "pointer",
                       }}
                     >
@@ -922,9 +951,19 @@ export default function Page() {
                 </div>
 
                 <div style={{ marginTop: 12 }}>
-                  <div style={{ fontWeight: 700 }}>Valor final (manual)</div>
-                  <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
-                    {fmtSmart(modalStats.finalVal)}
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700 }}>Valor estimado</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
+                        {fmtSmart(modalStats.finalVal)}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontWeight: 700 }}>Último valor cotado</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
+                        {fmtSmart(parseBRL(lastQuotes[modalItem.item] || "") || null)}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -946,9 +985,8 @@ export default function Page() {
                     style={{ marginTop: 6, width: "100%" }}
                   >
                     <option value="">(opcional) Selecione um motivo</option>
-                    <option value="OUTLIERS_MANUAL">Exclusão manual de valores destoantes</option>
-                    <option value="FONTE_PRIORIZADA">Priorização de fontes mais confiáveis</option>
-                    <option value="MERCADO_OSCILACAO">Oscilação de mercado</option>
+                    <option value="PADRAO_1">Exclusão de cotações abaixo do último preço homologado</option>
+                    <option value="PADRAO_2">Exclusão (abaixo do último preço) por exclusividade de fornecedor</option>
                     <option value="OUTRO">Outro</option>
                   </select>
                   <textarea
