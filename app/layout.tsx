@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "Extrator de Cotação (PDF → Excel)",
-  description: "Upload de PDF e geração de Excel (Compõe = Sim).",
+  title: "ANÁLISE DE PREÇOS - UPDE",
+  description: "Formação de preços de referência com base em pesquisa do ComprasGOV.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
