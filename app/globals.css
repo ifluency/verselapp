@@ -23,6 +23,7 @@ h1, h2, h3 {
   border: 1px solid #cbd5e1;
   background: #ffffff;
   color: #111827;
+  text-decoration: none;
   padding: 8px 12px;
   border-radius: 10px;
   font-weight: 700;
