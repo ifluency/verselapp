@@ -97,8 +97,21 @@ export default function CatmatPage() {
       });
 
       if (!res.ok) {
-        const msg = await res.text();
-        setStatus(`Falha ao consultar CATMATs: ${msg}`);
+        let msg = "";
+        try {
+          const ct = res.headers.get("content-type") || "";
+          if (ct.includes("application/json")) {
+            const j = await res.json();
+            msg = String((j && (j.error || j.message)) || "");
+          } else {
+            msg = (await res.text()) || "";
+          }
+        } catch {
+          msg = "";
+        }
+
+        const tail = msg ? ` ${msg}` : "";
+        setStatus(`Falha ao consultar CATMATs: HTTP ${res.status}.${tail}`);
         return;
       }
 
