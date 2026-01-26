@@ -26,7 +26,7 @@ type ApiResponse = {
 };
 
 function normalizeCatmatToken(token: string): string {
-  // Pega somente dígitos (CATMAT costuma ser numérico). Mantém zeros à esquerda.
+  // Mantém somente dígitos (CATMAT costuma ser numérico). Mantém zeros à esquerda.
   const digits = (token || "").replace(/\D+/g, "");
   return digits;
 }
@@ -38,29 +38,42 @@ function parseCatmatList(raw: string): CatmatQueryRow[] {
     .split("\n");
 
   const out: CatmatQueryRow[] = [];
+  let seq = 1;
 
   for (const line of lines) {
-    // Excel pode vir com TAB/; etc. Pegamos a 1ª célula.
-    const firstCell = (line || "").split("\t")[0].trim();
-    if (!firstCell) continue;
+    // Excel pode vir com TAB. Pega a 1ª coluna.
+    const firstCell = String(line || "").split("\t")[0] ?? "";
+    const catmat = normalizeCatmatToken(firstCell);
 
-    // Possível cabeçalho: "catmat" (qualquer case)
-    if (firstCell.trim().toLowerCase() === "catmat") continue;
+    // Ignora cabeçalhos/linhas inválidas (sem dígitos) e linhas em branco.
+    if (!catmat) continue;
 
-    const cat = normalizeCatmatToken(firstCell);
-    if (!cat) continue;
-
-    out.push({ seq: out.length + 1, catmat: cat });
+    out.push({ seq, catmat });
+    seq += 1;
   }
 
-  return out;
+  // Remove duplicados mantendo a primeira ocorrência (preserva ordem)
+  const seen = new Set<string>();
+  return out.filter((r) => {
+    if (seen.has(r.catmat)) return false;
+    seen.add(r.catmat);
+    return true;
+  });
 }
 
-export default function CatmatPage() {
-  const [rawInput, setRawInput] = useState<string>("");
-  const [status, setStatus] = useState<string>("");
+function truncate(s: string, max = 150): string {
+  const t = (s || "").trim();
+  if (!t) return "";
+  if (t.length <= max) return t;
+  return t.slice(0, max).trimEnd() + "…";
+}
+
+export default function Page() {
+  const [rawInput, setRawInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<React.ReactNode>(null);
   const [results, setResults] = useState<CatmatResultRow[]>([]);
+  const [copied, setCopied] = useState(false);
 
   const parsed = useMemo(() => parseCatmatList(rawInput), [rawInput]);
 
@@ -72,15 +85,51 @@ export default function CatmatPage() {
     () => results.filter((r) => r.statusItem === false).sort((a, b) => a.seq - b.seq),
     [results]
   );
-  const semRetorno = useMemo(
-    () => results.filter((r) => r.statusItem === null).sort((a, b) => a.seq - b.seq),
+
+  const erroCount = useMemo(
+    () => results.filter((r) => r.statusItem === null || !!r.error).length,
     [results]
   );
+
+  function limparTudo() {
+    setRawInput("");
+    setResults([]);
+    setStatus(null);
+    setCopied(false);
+  }
+
+  async function copiarInativos() {
+    const text = inativos.map((r) => r.catmat).join("\n");
+    if (!text) return;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // fallback
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.top = "-9999px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand("copy");
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      } finally {
+        document.body.removeChild(ta);
+      }
+    }
+  }
 
   async function consultar() {
     const rows = parsed;
     if (!rows.length) {
-      setStatus("Cole uma lista de CATMATs (1 por linha) para consultar.");
+      setStatus("Cole a lista de CATMATs (1 por linha) para consultar.");
       setResults([]);
       return;
     }
@@ -88,6 +137,7 @@ export default function CatmatPage() {
     setLoading(true);
     setStatus("Consultando CATMATs na API oficial...");
     setResults([]);
+    setCopied(false);
 
     try {
       const res = await fetch("/api/catmat", {
@@ -130,6 +180,7 @@ export default function CatmatPage() {
             error: "Sem retorno",
           };
         }
+
         return {
           seq: r.seq,
           catmat: r.catmat,
@@ -144,13 +195,18 @@ export default function CatmatPage() {
       const total = rows.length;
       const a = merged.filter((x) => x.statusItem === true).length;
       const i = merged.filter((x) => x.statusItem === false).length;
-      const s = merged.filter((x) => x.statusItem === null).length;
+      const s = merged.filter((x) => x.statusItem === null || !!x.error).length;
 
-      setStatus(
-        s
-          ? `Concluído. Pesquisados: ${total}. Ativos: ${a}. Inativos: ${i}. Sem retorno/erro: ${s}.`
-          : `Concluído. Pesquisados: ${total}. Ativos: ${a}. Inativos: ${i}.`
-      );
+      if (s) {
+        setStatus(
+          <span>
+            Concluído! | Pesquisados: {total} | Ativos: {a} | Inativos: {i}. |{" "}
+            <strong style={{ color: "#b91c1c" }}>Sem retorno/erro: {s}.</strong>
+          </span>
+        );
+      } else {
+        setStatus(`Concluído! | Pesquisados: ${total} | Ativos: ${a} | Inativos: ${i}.`);
+      }
     } catch (e: any) {
       setStatus(`Falha ao consultar CATMATs: ${String(e)}`);
     } finally {
@@ -158,14 +214,15 @@ export default function CatmatPage() {
     }
   }
 
-  function limparTudo() {
-    setRawInput("");
-    setResults([]);
-    setStatus("");
-  }
-
   return (
     <main style={{ margin: "12px 0 0", padding: "0 0 24px" }}>
+      <div style={{ marginTop: 4, marginBottom: 10 }}>
+        <div style={{ fontSize: 18, fontWeight: 900, color: "#111827" }}>Consulta CATMAT</div>
+        <div style={{ marginTop: 4, fontSize: 13, color: "#4b5563" }}>
+          Validação de status (ativo/inativo) via API de cadastro de materiais
+        </div>
+      </div>
+
       <div
         style={{
           marginTop: 12,
@@ -177,13 +234,11 @@ export default function CatmatPage() {
       >
         <div style={{ display: "grid", gap: 10 }}>
           <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontWeight: 900, fontSize: 13 }}>
-              Cole a lista de CATMATs (1 por linha)
-            </label>
+            <label style={{ fontWeight: 900, fontSize: 13 }}>Cole a lista de CATMATs aqui, 1 por linha</label>
             <textarea
               value={rawInput}
               onChange={(e) => setRawInput(e.target.value)}
-              placeholder={"Exemplo:\ncatmat\n123456\n789012\n..."}
+              placeholder={"Exemplo:\n123456\n789012\n098765\n654321\n..."}
               style={{
                 width: "100%",
                 minHeight: 160,
@@ -225,8 +280,9 @@ export default function CatmatPage() {
                 Linhas válidas detectadas: <strong>{parsed.length}</strong>
               </div>
             </div>
+
             <div style={{ fontSize: 12, color: "#6b7280" }}>
-              A aplicação ignora cabeçalho “catmat” e linhas em branco, e tolera colagem vinda do Excel (com TAB).
+              A aplicação ignora qualquer cabeçalho e também qualquer linha em branco.
             </div>
           </div>
 
@@ -246,40 +302,43 @@ export default function CatmatPage() {
         </div>
       </div>
 
-      {/* Resultados */}
       {!!results.length && (
         <>
-          <SectionTable title="CATMATs Ativos" rows={ativos} emptyText="Nenhum CATMAT ativo encontrado." />
-          <SectionTable
-            title="CATMATs Inativos"
-            rows={inativos}
-            emptyText="Nenhum CATMAT inativo encontrado."
-          />
+          <div
+            style={{
+              marginTop: 14,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))",
+              gap: 14,
+              alignItems: "start",
+            }}
+          >
+            <StatusTable
+              title="CATMATs Ativos"
+              variant="active"
+              rows={ativos}
+              emptyText="Nenhum CATMAT ativo encontrado."
+            />
 
-          {/* Sem retorno/erro (não é tabela, para manter o requisito de 2 tabelas) */}
-          {!!semRetorno.length && (
-            <div
-              style={{
-                marginTop: 14,
-                border: "1px solid #fde68a",
-                background: "#fffbeb",
-                borderRadius: 12,
-                padding: 12,
-              }}
-            >
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Sem retorno/erro na consulta</div>
-              <div style={{ fontSize: 13, color: "#374151" }}>
-                {semRetorno.map((r) => (
-                  <div key={r.seq} style={{ marginTop: 4 }}>
-                    <strong>{r.seq}.</strong> CATMAT <span style={{ fontFamily: mono }}>{r.catmat}</span>
-                    {r.error ? <span style={{ opacity: 0.8 }}> — {r.error}</span> : null}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+            <StatusTable
+              title="CATMATs Inativos"
+              variant="inactive"
+              rows={inativos}
+              emptyText="Nenhum CATMAT inativo encontrado."
+              rightAction={
+                <button
+                  className="btn btnGhost"
+                  onClick={copiarInativos}
+                  disabled={!inativos.length}
+                  style={{ height: 32 }}
+                  title="Copiar CATMATs inativos"
+                >
+                  {copied ? "Copiado!" : "Copiar inativos"}
+                </button>
+              }
+            />
+          </div>
 
-          {/* Resumo */}
           <div
             style={{
               marginTop: 14,
@@ -294,8 +353,13 @@ export default function CatmatPage() {
               <SummaryPill label="Pesquisados" value={parsed.length} />
               <SummaryPill label="Ativos" value={ativos.length} />
               <SummaryPill label="Inativos" value={inativos.length} />
-              {!!semRetorno.length && <SummaryPill label="Sem retorno/erro" value={semRetorno.length} />}
             </div>
+
+            {!!erroCount && (
+              <div style={{ marginTop: 10, fontSize: 13, color: "#b91c1c" }}>
+                <strong>catmats com erro:</strong> {erroCount}
+              </div>
+            )}
           </div>
         </>
       )}
@@ -303,52 +367,67 @@ export default function CatmatPage() {
   );
 }
 
-function SectionTable({
+function StatusTable({
   title,
+  variant,
   rows,
   emptyText,
+  rightAction,
 }: {
   title: string;
+  variant: "active" | "inactive";
   rows: CatmatResultRow[];
   emptyText: string;
+  rightAction?: React.ReactNode;
 }) {
+  const headerBg = variant === "active" ? "#15803d" : "#b91c1c";
+
   return (
-    <div style={{ marginTop: 14, overflowX: "auto" }}>
-      <div style={{ fontWeight: 900, margin: "0 0 8px", fontSize: 13 }}>{title}</div>
-      <table
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", background: "#ffffff" }}>
+      <div
         style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          overflow: "hidden",
-          background: "#ffffff",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "10px 12px",
+          background: headerBg,
+          color: "#ffffff",
+          fontWeight: 900,
+          fontSize: 13,
         }}
       >
-        <thead>
-          <tr style={{ background: "#f9fafb" }}>
-            <th style={th}>Sequência</th>
-            <th style={th}>CATMAT</th>
-            <th style={th}>Descritivo</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.seq}-${r.catmat}`}>
-              <td style={tdMono}>{r.seq}</td>
-              <td style={tdMono}>{r.catmat}</td>
-              <td style={td}>{r.descritivo || ""}</td>
+        <div>{title}</div>
+        {rightAction ? <div style={{ display: "flex", gap: 8 }}>{rightAction}</div> : null}
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#f9fafb" }}>
+              <th style={th}>Sequência</th>
+              <th style={th}>CATMAT</th>
+              <th style={th}>Descritivo</th>
             </tr>
-          ))}
-          {!rows.length && (
-            <tr>
-              <td style={td} colSpan={3}>
-                {emptyText}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.seq}-${r.catmat}`}>
+                <td style={tdMono}>{r.seq}</td>
+                <td style={tdMono}>{r.catmat}</td>
+                <td style={td}>{truncate(r.descritivo, 150)}</td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td style={td} colSpan={3}>
+                  {emptyText}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -358,12 +437,12 @@ function SummaryPill({ label, value }: { label: string; value: number }) {
     <div
       style={{
         border: "1px solid #e5e7eb",
-        background: "#f9fafb",
         borderRadius: 999,
         padding: "6px 10px",
+        background: "#f9fafb",
       }}
     >
-      <span style={{ fontWeight: 800 }}>{label}:</span> <span>{value}</span>
+      <span style={{ color: "#6b7280" }}>{label}:</span> <strong>{value}</strong>
     </div>
   );
 }
@@ -382,7 +461,7 @@ const th: React.CSSProperties = {
 
 const td: React.CSSProperties = {
   padding: "10px 12px",
-  fontSize: 13,
+  fontSize: 12,
   borderBottom: "1px solid #f3f4f6",
   color: "#111827",
   verticalAlign: "top",
@@ -391,5 +470,4 @@ const td: React.CSSProperties = {
 const tdMono: React.CSSProperties = {
   ...td,
   fontFamily: mono,
-  fontSize: 12,
 };
