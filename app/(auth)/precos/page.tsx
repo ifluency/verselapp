@@ -448,6 +448,14 @@ export default function Page() {
   return (
     <main style={{ margin: "12px 0 0", padding: "0 0 110px" }}>
 
+      <div style={{ marginTop: 4, marginBottom: 10 }}>
+        <div style={{ fontSize: 18, fontWeight: 900, color: "#111827" }}>Formação de Preços de Referência</div>
+        <div style={{ marginTop: 4, fontSize: 13, color: "#4b5563" }}>
+          Geração de relatórios (PDF) com base na pesquisa do ComprasGOV
+        </div>
+      </div>
+
+
       {/* Etapas */}
       <div
         style={{
