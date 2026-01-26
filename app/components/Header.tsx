@@ -30,10 +30,10 @@ export default function Header() {
     >
       <div>
         <div style={{ margin: 0, fontSize: 22, fontWeight: 900, letterSpacing: 0.2 }}>
-          ANÁLISE DE PREÇOS - UPDE
+          Painel de Ferramentas - UPDE | HUSM
         </div>
         <div style={{ marginTop: 4, color: "#4b5563", fontSize: 13 }}>
-          Formação de preços de referência com base em pesquisa do ComprasGOV
+          Versão 1.1.0 | 26/01/2026
         </div>
       </div>
 
