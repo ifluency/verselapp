@@ -6,11 +6,18 @@ import { usePathname } from "next/navigation";
 
 type ToolLink = { label: string; href: string; desc?: string };
 
-const TOOLS: ToolLink[] = [
+const MAIN_TOOLS: ToolLink[] = [
   { label: "Preços de Referência", href: "/precos", desc: "Geração dos Relatórios de Preços de Referência" },
   { label: "Consulta CATMAT", href: "/catmat", desc: "Busca por CATMATs inativos" },
-  { label: "Manual de Utilização", href: "/manual", desc: "Orientações de uso das ferramentas" },
 ];
+
+const MANUAL_TOOL: ToolLink = {
+  label: "Manual de Utilização",
+  href: "/manual",
+  desc: "Orientações de uso das ferramentas",
+};
+
+const ALL_TOOLS: ToolLink[] = [...MAIN_TOOLS, MANUAL_TOOL];
 
 function IconMenu({ size = 18 }: { size?: number }) {
   return (
@@ -54,7 +61,7 @@ export default function Tabs() {
   const [open, setOpen] = useState(false);
 
   const activeLabel = useMemo(() => {
-    const found = TOOLS.find((t) => t.href === pathname);
+    const found = ALL_TOOLS.find((t) => t.href === pathname);
     return found?.label || "Ferramentas";
   }, [pathname]);
 
@@ -143,7 +150,7 @@ export default function Tabs() {
         </div>
 
         <nav style={{ padding: 12, display: "grid", gap: 8 }}>
-          {TOOLS.map((t) => {
+          {MAIN_TOOLS.map((t) => {
             const active = pathname === t.href;
             return (
               <Link
@@ -171,9 +178,32 @@ export default function Tabs() {
         </nav>
 
         <div style={{ marginTop: "auto", padding: 14, borderTop: "1px solid #e5e7eb" }}>
-          <div style={{ fontSize: 12, color: "#6b7280" }}>
-            Navegue pelas ferramentas através deste menu.
+          {/* Manual fixo no canto inferior, acima do texto de ajuda */}
+          <div style={{ marginBottom: 10 }}>
+            <Link
+              href={MANUAL_TOOL.href}
+              onClick={() => setOpen(false)}
+              style={{
+                textDecoration: "none",
+                border: "1px solid " + (pathname === MANUAL_TOOL.href ? "#111827" : "#e5e7eb"),
+                borderRadius: 12,
+                padding: "10px 12px",
+                background: pathname === MANUAL_TOOL.href ? "#111827" : "#ffffff",
+                color: pathname === MANUAL_TOOL.href ? "#ffffff" : "#111827",
+                display: "grid",
+                gap: 4,
+              }}
+            >
+              <div style={{ fontWeight: 900 }}>{MANUAL_TOOL.label}</div>
+              {!!MANUAL_TOOL.desc && (
+                <div style={{ fontSize: 12, opacity: pathname === MANUAL_TOOL.href ? 0.9 : 0.75 }}>
+                  {MANUAL_TOOL.desc}
+                </div>
+              )}
+            </Link>
           </div>
+
+          <div style={{ fontSize: 12, color: "#6b7280" }}>Navegue pelas ferramentas através deste menu.</div>
         </div>
       </aside>
     </>
