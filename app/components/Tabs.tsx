@@ -7,8 +7,8 @@ import { usePathname } from "next/navigation";
 type ToolLink = { label: string; href: string; desc?: string };
 
 const TOOLS: ToolLink[] = [
-  { label: "Preços de Referência", href: "/precos", desc: "Geração de PDFs de referência" },
-  { label: "Consulta CATMAT", href: "/catmat", desc: "Busca e validação de CATMAT" },
+  { label: "Preços de Referência", href: "/precos", desc: "Geração dos Relatórios de Preços de Referência" },
+  { label: "Consulta CATMAT", href: "/catmat", desc: "Busca por CATMATs inativos" },
 ];
 
 function IconMenu({ size = 18 }: { size?: number }) {
@@ -171,7 +171,7 @@ export default function Tabs() {
 
         <div style={{ marginTop: "auto", padding: 14, borderTop: "1px solid #e5e7eb" }}>
           <div style={{ fontSize: 12, color: "#6b7280" }}>
-            Menu flutuante: clique no ícone no canto superior para acessar as ferramentas.
+            Navegue pelas ferramentas através deste menu.
           </div>
         </div>
       </aside>
