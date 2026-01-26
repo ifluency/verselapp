@@ -80,9 +80,9 @@ export default function LoginPage() {
           }}
         >
           <div>
-            <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0.2 }}>ANÁLISE DE PREÇOS - UPDE</div>
+            <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0.2 }}>PAINEL DE FERRAMENTAS - UPDE</div>
             <div style={{ marginTop: 4, color: "#4b5563", fontSize: 13 }}>
-              Formação de preços de referência com base em pesquisa do ComprasGOV
+              Ferramentas utilizadas pela UPDE | HUSM
             </div>
           </div>
 
