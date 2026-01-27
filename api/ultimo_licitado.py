@@ -86,7 +86,7 @@ class handler(BaseHTTPRequestHandler):
             if not isinstance(catmats_in, list):
                 return self._send_json(400, {"error": "Campo 'catmats' deve ser uma lista."})
 
-            # Normaliza catmat: só dígitos; mantém strings numéricas com 6+ dígitos
+            # Normaliza catmat: só dígitos
             catmats: list[str] = []
             for c in catmats_in:
                 s = str(c).strip()
@@ -104,17 +104,26 @@ class handler(BaseHTTPRequestHandler):
             conn = psycopg2.connect(dsn, sslmode="require")
             try:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # Consultamos direto a tabela para garantir campos como nome_fornecedor/situacao.
                     cur.execute(
                         """
-                        SELECT
-                          cod_item_catalogo::text AS catmat,
-                          id_compra::text AS id_compra,
-                          data_resultado,
-                          valor_unitario_estimado,
-                          valor_unitario_resultado,
-                          nome_fornecedor
-                        FROM vw_catmat_preco_ultimo
-                        WHERE cod_item_catalogo::text = ANY(%s)
+                        SELECT DISTINCT ON (i.cod_item_catalogo)
+                          i.cod_item_catalogo::text AS catmat,
+                          i.id_compra::text AS id_compra,
+                          i.data_resultado,
+                          i.valor_unitario_estimado,
+                          i.valor_unitario_resultado,
+                          i.nome_fornecedor,
+                          i.situacao_compra_item_nome
+                        FROM contratacao_item_pncp_14133 i
+                        WHERE i.cod_item_catalogo IS NOT NULL
+                          AND i.cod_item_catalogo::text = ANY(%s)
+                        ORDER BY i.cod_item_catalogo,
+                                 i.data_resultado DESC NULLS LAST,
+                                 i.data_atualizacao_pncp DESC NULLS LAST,
+                                 i.data_inclusao_pncp DESC NULLS LAST,
+                                 i.id_compra DESC,
+                                 i.id_compra_item DESC
                         """,
                         (catmats,),
                     )
@@ -152,6 +161,7 @@ class handler(BaseHTTPRequestHandler):
                 v_est = _to_float(r.get("valor_unitario_estimado"))
                 v_res = _to_float(r.get("valor_unitario_resultado"))
                 forn = str(r.get("nome_fornecedor") or "").strip()
+                situ = str(r.get("situacao_compra_item_nome") or "").strip()
 
                 status = "ok" if v_res is not None else "fracassado"
 
@@ -164,6 +174,7 @@ class handler(BaseHTTPRequestHandler):
                     "pregao": _pregao_from_id_compra(id_compra),
                     "compra_link": _compra_link(id_compra),
                     "nome_fornecedor": forn,
+                    "situacao_compra_item_nome": situ,
                     "valor_unitario_estimado_num": v_est,
                     "valor_unitario_resultado_num": v_res,
                 }
@@ -176,10 +187,7 @@ class handler(BaseHTTPRequestHandler):
             print(tb)
             if debug_mode:
                 return self._send_text(500, f"Erro ao consultar:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
-            return self._send_text(
-                500,
-                "Falha ao consultar base PNCP. Tente novamente ou use /api/ultimo_licitado?debug=1.",
-            )
+            return self._send_text(500, f"Falha ao consultar base PNCP: {str(e)}")
 
     def do_GET(self):
         return self._send_text(405, "Use POST com JSON: {\"catmats\": [\"455302\", ...]} ")
