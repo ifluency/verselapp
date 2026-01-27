@@ -71,9 +71,26 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         q = parse_qs(urlparse(self.path).query)
         debug_mode = q.get("debug", ["0"])[0] in ("1", "true", "True", "yes", "sim")
+
         catmat = (q.get("catmat", [""])[0] or "").strip()
-        if not catmat or not catmat.isdigit():
-            return self._send_json(400, {"error": "Parâmetro 'catmat' inválido."})
+
+        # Se não veio catmat, retorna instrução de uso (especialmente útil no debug)
+        if not catmat:
+            payload = {
+                "error": "Parâmetro 'catmat' é obrigatório.",
+                "usage": "Use GET com ?catmat=XXXXXX",
+                "example": "/api/catmat_historico?catmat=455302",
+            }
+            # No debug, devolve 200 para você poder ver a mensagem sem parecer “erro do sistema”
+            return self._send_json(200 if debug_mode else 400, payload)
+
+        if not catmat.isdigit():
+            payload = {
+                "error": "Parâmetro 'catmat' inválido. Deve conter apenas dígitos.",
+                "usage": "Use GET com ?catmat=XXXXXX",
+                "example": "/api/catmat_historico?catmat=455302",
+            }
+            return self._send_json(400, payload)
 
         try:
             dsn = os.environ.get("DATABASE_URL", "").strip()
