@@ -1,40 +1,71 @@
-import json
 import os
+import json
 import traceback
-from datetime import date, datetime
+from datetime import datetime, date
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse, parse_qs
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 
 def _as_date(v):
-    """Converte o valor retornado pelo Postgres para date (quando aplicável)."""
     if v is None:
         return None
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
     if isinstance(v, datetime):
         return v.date()
-    if isinstance(v, date):
-        return v
-    # Em geral o driver já retorna date/datetime. Se vier string, não convertemos.
-    return None
+    try:
+        return datetime.fromisoformat(str(v)).date()
+    except Exception:
+        return None
 
 
-def _fmt_br(d) -> str:
+def _fmt_date_br(d: date | None) -> str:
     if not d:
         return ""
     return d.strftime("%d/%m/%Y")
 
 
-def _normalize_catmat(x):
-    s = str(x or "").strip()
-    if s.isdigit() and len(s) == 6:
-        return s
-    digits = "".join(ch for ch in s if ch.isdigit())
-    if digits.isdigit() and len(digits) == 6:
-        return digits
-    return None
+def _pregao_from_id_compra(id_compra: str | None) -> str:
+    """Deriva pregão a partir do id_compra.
+
+    Regra prática:
+      - Ano = últimos 4 dígitos
+      - Número = 5 dígitos antes do ano
+      - Se número começar com 9, remove o 9 e usa os 4 restantes
+      - Formata como XXX/AAAA (padding)
+    """
+    if not id_compra:
+        return ""
+    s = str(id_compra).strip()
+    if len(s) < 9:
+        return ""
+    year = s[-4:]
+    num5 = s[-9:-4]
+    if not (year.isdigit() and num5.isdigit()):
+        return ""
+    if num5.startswith("9"):
+        num = num5[1:]
+    else:
+        num = num5
+    try:
+        return f"{int(num):03d}/{int(year):04d}"
+    except Exception:
+        return ""
+
+
+def _compra_link(id_compra: str | None) -> str:
+    if not id_compra:
+        return ""
+    s = str(id_compra).strip()
+    if not s:
+        return ""
+    return (
+        "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
+        f"acompanhamento-compra?compra={s}"
+    )
 
 
 class handler(BaseHTTPRequestHandler):
@@ -55,13 +86,12 @@ class handler(BaseHTTPRequestHandler):
             if not isinstance(catmats_in, list):
                 return self._send_json(400, {"error": "Campo 'catmats' deve ser uma lista."})
 
-            catmats = []
+            # Normaliza catmat: só dígitos; mantém strings numéricas com 6+ dígitos
+            catmats: list[str] = []
             for c in catmats_in:
-                norm = _normalize_catmat(c)
-                if norm:
-                    catmats.append(norm)
-
-            # unique preservando ordem
+                s = str(c).strip()
+                if s.isdigit():
+                    catmats.append(s)
             catmats = list(dict.fromkeys(catmats))
 
             if not catmats:
@@ -78,8 +108,11 @@ class handler(BaseHTTPRequestHandler):
                         """
                         SELECT
                           cod_item_catalogo::text AS catmat,
+                          id_compra::text AS id_compra,
                           data_resultado,
-                          valor_unitario_resultado
+                          valor_unitario_estimado,
+                          valor_unitario_resultado,
+                          nome_fornecedor
                         FROM vw_catmat_preco_ultimo
                         WHERE cod_item_catalogo::text = ANY(%s)
                         """,
@@ -89,33 +122,50 @@ class handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
 
-            by_catmat = {}
+            # Default: não encontrado
+            by_catmat: dict[str, dict] = {}
             for c in catmats:
                 by_catmat[c] = {
                     "catmat": c,
                     "status": "nao_encontrado",
-                    "valor_unitario_resultado_num": None,
                     "data_resultado_iso": None,
                     "data_resultado_br": "",
+                    "id_compra": "",
+                    "pregao": "",
+                    "compra_link": "",
+                    "nome_fornecedor": "",
+                    "valor_unitario_estimado_num": None,
+                    "valor_unitario_resultado_num": None,
                 }
 
             for r in rows:
                 c = str(r.get("catmat") or "").strip()
+                id_compra = str(r.get("id_compra") or "").strip()
                 d = _as_date(r.get("data_resultado"))
-                v = r.get("valor_unitario_resultado")
 
-                try:
-                    vnum = float(v) if v is not None else None
-                except Exception:
-                    vnum = None
+                def _to_float(x):
+                    try:
+                        return float(x) if x is not None else None
+                    except Exception:
+                        return None
 
-                status = "ok" if vnum is not None else "fracassado"
+                v_est = _to_float(r.get("valor_unitario_estimado"))
+                v_res = _to_float(r.get("valor_unitario_resultado"))
+                forn = str(r.get("nome_fornecedor") or "").strip()
+
+                status = "ok" if v_res is not None else "fracassado"
+
                 by_catmat[c] = {
                     "catmat": c,
                     "status": status,
-                    "valor_unitario_resultado_num": vnum,
-                    "data_resultado_iso": d.isoformat() if d else None,
-                    "data_resultado_br": _fmt_br(d),
+                    "data_resultado_iso": (d.isoformat() if d else None),
+                    "data_resultado_br": _fmt_date_br(d),
+                    "id_compra": id_compra,
+                    "pregao": _pregao_from_id_compra(id_compra),
+                    "compra_link": _compra_link(id_compra),
+                    "nome_fornecedor": forn,
+                    "valor_unitario_estimado_num": v_est,
+                    "valor_unitario_resultado_num": v_res,
                 }
 
             return self._send_json(200, {"by_catmat": by_catmat, "count": len(by_catmat)})
@@ -125,14 +175,14 @@ class handler(BaseHTTPRequestHandler):
             print("ERROR /api/ultimo_licitado:", str(e))
             print(tb)
             if debug_mode:
-                return self._send_text(500, f"Erro ao consultar base PNCP:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
+                return self._send_text(500, f"Erro ao consultar:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
             return self._send_text(
                 500,
                 "Falha ao consultar base PNCP. Tente novamente ou use /api/ultimo_licitado?debug=1.",
             )
 
     def do_GET(self):
-        return self._send_text(405, 'Use POST com JSON: {"catmats": ["455302", ...]}')
+        return self._send_text(405, "Use POST com JSON: {\"catmats\": [\"455302\", ...]} ")
 
     def _send_text(self, status: int, msg: str):
         data = (msg or "").encode("utf-8")
