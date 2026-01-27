@@ -23,6 +23,39 @@ type ManualOverride = {
   justificativaTexto: string;
 };
 
+type PncpLatest = {
+  catmat: number;
+  pregao: string | null;
+  compra_url: string | null;
+  id_compra: string | null;
+  last_estimado_num: number | null;
+  last_estimado_display: string | null;
+  last_licitado_num: number | null;
+  last_licitado_display: string | null; // pode vir "Fracassado"
+  nome_fornecedor: string | null;
+  data_resultado: string | null; // YYYY-MM-DD
+  numero_item_pncp: number | null;
+  situacao_compra_item_nome: string | null;
+  tem_resultado: boolean | null;
+};
+
+type PncpHistoryRow = {
+  catmat: number;
+  data_resultado: string | null;
+  pregao: string | null;
+  numero_item_pncp: number | null;
+  valor_estimado_num: number | null;
+  valor_estimado_display: string | null;
+  valor_licitado_num: number | null;
+  valor_licitado_display: string | null;
+  descricao_resumida: string | null;
+  situacao_compra_item_nome: string | null;
+  tem_resultado: boolean | null;
+  nome_fornecedor: string | null;
+  compra_url: string;
+  id_compra: string;
+};
+
 function parseBRL(input: string): number | null {
   const s = (input || "")
     .trim()
@@ -129,6 +162,15 @@ export default function Page() {
   const [lastQuotes, setLastQuotes] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, ManualOverride>>({});
 
+  // PNCP (Neon) auto-price lookup by CATMAT
+  const [pncpLatestByCatmat, setPncpLatestByCatmat] = useState<Record<number, PncpLatest>>({});
+
+  // History modal (PNCP)
+  const [histOpen, setHistOpen] = useState(false);
+  const [histCatmat, setHistCatmat] = useState<number | null>(null);
+  const [histLoading, setHistLoading] = useState(false);
+  const [histRows, setHistRows] = useState<PncpHistoryRow[]>([]);
+
   // Modal state
   const [modalItemId, setModalItemId] = useState<string | null>(null);
   const modalItem = useMemo(
@@ -151,6 +193,7 @@ export default function Page() {
     setPreview([]);
     setOverrides({});
     setLastQuotes({});
+    setPncpLatestByCatmat({});
     setModalItemId(null);
     setActiveLastQuoteRow(null);
     setStatus("");
@@ -160,6 +203,59 @@ export default function Page() {
     setProcessoSEI("");
     setResponsavel("");
   }, [file?.name, file?.size, file?.lastModified]);
+
+  // Auto-preenche "Último licitado" (e metadados) via Neon/PNCP com base no CATMAT.
+  // Não sobrescreve caso o usuário já tenha digitado algo.
+  useEffect(() => {
+    const catmats = Array.from(
+      new Set(preview.map((p) => p.codigo_item).filter((c): c is number => typeof c === "number"))
+    );
+    if (!previewReady || catmats.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/pncp_precos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ catmats }),
+        });
+        if (!res.ok) throw new Error(`Falha ao buscar PNCP (${res.status})`);
+        const data = await res.json();
+        if (cancelled) return;
+
+        const items = (data?.items || {}) as Record<string, PncpLatest>;
+        const nextByCatmat: Record<number, PncpLatest> = {};
+        for (const [k, v] of Object.entries(items)) {
+          const n = Number(k);
+          if (!Number.isNaN(n) && v) nextByCatmat[n] = v;
+        }
+        setPncpLatestByCatmat(nextByCatmat);
+
+        // Preenche apenas quando não há valor informado.
+        setLastQuotes((prev) => {
+          const next = { ...prev };
+          for (const p of preview) {
+            if (!p.item) continue;
+            if (next[p.item] && next[p.item].trim() !== "") continue;
+            if (typeof p.codigo_item !== "number") continue;
+            const latest = nextByCatmat[p.codigo_item];
+            if (!latest) continue;
+            next[p.item] = latest.last_licitado_display ?? "Fracassado";
+          }
+          return next;
+        });
+      } catch (e: any) {
+        // Silencioso: mantém o fluxo manual se não houver conexão/configuração.
+        if (!cancelled) console.warn("PNCP lookup falhou:", e?.message || e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [previewReady, preview]);
 
   const modalIdxToVal = useMemo(() => {
     const m = new Map<number, number>();
@@ -237,6 +333,27 @@ export default function Page() {
       setModalMethod(suggested);
       setModalJustCode("");
       setModalJustText("");
+    }
+  }
+
+  async function openHistoryModal(catmat: number) {
+    setHistCatmat(catmat);
+    setHistLoading(true);
+    setHistError(null);
+    setHistRows([]);
+    setHistLatest(null);
+    setHistOpen(true);
+
+    try {
+      const res = await fetch(`/api/pncp_precos?catmat=${encodeURIComponent(String(catmat))}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setHistRows((data?.history || []) as PncpHistoryRow[]);
+      setHistLatest((data?.latest || null) as PncpLatest | null);
+    } catch (e: any) {
+      setHistError(e?.message || "Falha ao buscar histórico no PNCP/Neon");
+    } finally {
+      setHistLoading(false);
     }
   }
 
@@ -716,26 +833,74 @@ export default function Page() {
                     {fmtBRL(r.valor_calculado)}
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
-                    <input
-                      value={lastQuotes[r.item] || ""}
-                      onChange={(e) =>
-                        setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
-                      }
-                      onFocus={() => setActiveLastQuoteRow(r.item)}
-                      onBlur={() =>
-                        setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))
-                      }
-                      placeholder="ex: 1.234,56"
-                      style={{
-                        width: 88,
-                        fontSize: 13,
-                        padding: "3px 6px",
-                        border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
-                        borderRadius: 6,
-                        outline: "none",
-                        background: isActive ? "#ffffff" : undefined,
-                      }}
-                    />
+                    {(() => {
+                      const catmat = r.codigo_item || null;
+                      const latest = catmat ? pncpLatestByCatmat[catmat] : undefined;
+
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center" }}>
+                            <input
+                              value={lastQuotes[r.item] || ""}
+                              onChange={(e) =>
+                                setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
+                              }
+                              onFocus={() => setActiveLastQuoteRow(r.item)}
+                              onBlur={() =>
+                                setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))
+                              }
+                              placeholder="ex: 1.234,56"
+                              style={{
+                                width: 88,
+                                fontSize: 13,
+                                padding: "3px 6px",
+                                border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
+                                borderRadius: 6,
+                                outline: "none",
+                                background: isActive ? "#ffffff" : undefined,
+                              }}
+                            />
+                            <button
+                              type="button"
+                              title="Ver histórico (PNCP)"
+                              onClick={() => {
+                                if (!catmat) return;
+                                setHistCatmat(catmat);
+                                setHistOpen(true);
+                              }}
+                              style={{
+                                height: 28,
+                                minWidth: 28,
+                                borderRadius: 6,
+                                border: "1px solid #ccc",
+                                background: "#fff",
+                                cursor: catmat ? "pointer" : "not-allowed",
+                                fontSize: 14,
+                              }}
+                              disabled={!catmat}
+                            >
+                              ⓘ
+                            </button>
+                          </div>
+
+                          {latest ? (
+                            <div style={{ fontSize: 11, lineHeight: 1.25, color: "#444", maxWidth: 220 }}>
+                              <div>
+                                <strong>Estimado:</strong> {latest.last_estimado_display || "—"}
+                              </div>
+                              <div>
+                                <strong>Pregão:</strong> {latest.pregao || "—"}
+                              </div>
+                              <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                <strong>Fornecedor:</strong> {latest.nome_fornecedor || "—"}
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 11, color: "#888" }}>—</div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.modo}</td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
@@ -992,6 +1157,127 @@ export default function Page() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal — Histórico PNCP (Neon) */}
+      {histOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 60,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setHistOpen(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              width: "min(1120px, 100%)",
+              background: "white",
+              borderRadius: 8,
+              padding: 16,
+              maxHeight: "85vh",
+              overflowY: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Histórico PNCP — CATMAT {histCatmat ?? "-"}</h2>
+                <p style={{ margin: "6px 0 0", opacity: 0.85 }}>
+                  Valores estimados e licitados já capturados do PNCP (via Neon).
+                </p>
+              </div>
+              <button onClick={() => setHistOpen(false)}>Fechar</button>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              {histLoading ? (
+                <div>Carregando...</div>
+              ) : histError ? (
+                <div style={{ color: "#b91c1c" }}>{histError}</div>
+              ) : (
+                <>
+                  {histLatest?.compra_url ? (
+                    <div style={{ marginBottom: 10 }}>
+                      <a href={histLatest.compra_url} target="_blank" rel="noreferrer">
+                        Abrir página oficial da compra
+                      </a>
+                    </div>
+                  ) : null}
+
+                  <div style={{ overflowX: "auto", border: "1px solid #eee", borderRadius: 8 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ background: "#f9fafb" }}>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "left" }}>Data</th>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "left" }}>Pregão</th>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "right" }}>Item</th>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "right" }}>Estimado</th>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "right" }}>Licitado</th>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "left" }}>Fornecedor</th>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "left" }}>Situação</th>
+                          <th style={{ borderBottom: "1px solid #eee", padding: 8, textAlign: "left" }}>Link</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {histRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} style={{ padding: 10, opacity: 0.75 }}>
+                              Nenhum registro encontrado.
+                            </td>
+                          </tr>
+                        ) : (
+                          histRows.map((row, idx) => (
+                            <tr key={`${row.id_compra || "-"}-${row.numero_item_pncp || idx}-${idx}`}>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8 }}>
+                                {row.data_resultado_display || "-"}
+                              </td>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8 }}>
+                                {row.pregao || "-"}
+                              </td>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8, textAlign: "right" }}>
+                                {row.numero_item_pncp ?? "-"}
+                              </td>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8, textAlign: "right", fontFamily: "monospace" }}>
+                                {row.valor_estimado_display || "-"}
+                              </td>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8, textAlign: "right", fontFamily: "monospace" }}>
+                                {row.valor_licitado_display || "Fracassado"}
+                              </td>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8 }}>
+                                {row.nome_fornecedor || "-"}
+                              </td>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8 }}>
+                                {row.situacao_compra_item_nome || "-"}
+                              </td>
+                              <td style={{ borderTop: "1px solid #eee", padding: 8 }}>
+                                {row.compra_url ? (
+                                  <a href={row.compra_url} target="_blank" rel="noreferrer">
+                                    Abrir
+                                  </a>
+                                ) : (
+                                  "-"
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
