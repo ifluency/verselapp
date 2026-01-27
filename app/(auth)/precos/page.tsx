@@ -23,6 +23,40 @@ type ManualOverride = {
   justificativaTexto: string;
 };
 
+type PncpUltimoInfo = {
+  catmat: string;
+  status: "ok" | "fracassado" | "nao_encontrado";
+  data_resultado_iso: string | null;
+  data_resultado_br: string;
+  id_compra: string;
+  pregao: string;
+  compra_link: string;
+  nome_fornecedor: string;
+  valor_unitario_estimado_num: number | null;
+  valor_unitario_resultado_num: number | null;
+};
+
+type PncpHistoricoRow = {
+  catmat: string;
+  descricao_resumida: string;
+  material_ou_servico: string;
+  unidade_medida: string;
+  id_compra: string;
+  id_compra_item: string;
+  numero_controle_pncp_compra: string;
+  codigo_modalidade: number | null;
+  data_resultado_iso: string | null;
+  data_resultado_br: string;
+  pregao: string;
+  quantidade: number | null;
+  valor_unitario_estimado_num: number | null;
+  valor_unitario_resultado_num: number | null;
+  resultado_status: "ok" | "fracassado";
+  nome_fornecedor: string;
+  situacao_compra_item_nome: string;
+  compra_link: string;
+};
+
 function parseBRL(input: string): number | null {
   const s = (input || "")
     .trim()
@@ -129,50 +163,16 @@ export default function Page() {
   const [lastQuotes, setLastQuotes] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, ManualOverride>>({});
 
-  async function hydrateLastQuotesFromNeon(items: PreviewItem[]) {
-    try {
-      const catmats = Array.from(
-        new Set(
-          (items || [])
-            .map((it) => String(it.catmat || "").trim())
-            .filter((c) => /^\d{6}$/.test(c))
-        )
-      );
+  // Dados PNCP (Neon) — último registro por CATMAT
+  const [pncpUltimoByItem, setPncpUltimoByItem] = useState<Record<string, PncpUltimoInfo>>({});
+  const [pncpUltimoLoading, setPncpUltimoLoading] = useState<boolean>(false);
 
-      if (!catmats.length) return;
-
-      const res = await fetch("/api/ultimo_licitado", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ catmats }),
-      });
-
-      if (!res.ok) return;
-      const data = await res.json();
-      const byCatmat = (data?.by_catmat || {}) as Record<
-        string,
-        { status: string; valor_unitario_resultado_num: number | null }
-      >;
-
-      setLastQuotes((prev) => {
-        const next = { ...prev };
-        for (const it of items || []) {
-          const c = String(it.catmat || "").trim();
-          const row = byCatmat[c];
-          if (!row) continue;
-
-          if (row.status === "ok" && typeof row.valor_unitario_resultado_num === "number") {
-            next[it.item] = fmtSmart(row.valor_unitario_resultado_num);
-          } else if (row.status === "fracassado") {
-            next[it.item] = "Fracassado";
-          }
-        }
-        return next;
-      });
-    } catch {
-      // Silencioso: não impede o fluxo da prévia.
-    }
-  }
+  // Modal: histórico PNCP por CATMAT
+  const [pncpHistOpen, setPncpHistOpen] = useState<boolean>(false);
+  const [pncpHistCatmat, setPncpHistCatmat] = useState<string>("");
+  const [pncpHistLoading, setPncpHistLoading] = useState<boolean>(false);
+  const [pncpHistError, setPncpHistError] = useState<string>("");
+  const [pncpHistRows, setPncpHistRows] = useState<PncpHistoricoRow[]>([]);
 
   // Modal state
   const [modalItemId, setModalItemId] = useState<string | null>(null);
@@ -180,6 +180,13 @@ export default function Page() {
     () => preview.find((p) => p.item === modalItemId) || null,
     [preview, modalItemId]
   );
+
+  const pncpUltForModal = useMemo(() => {
+    if (!pncpHistCatmat) return null;
+    const it = preview.find((p) => String(p.catmat || "").trim() === pncpHistCatmat);
+    if (!it) return null;
+    return pncpUltimoByItem[it.item] || null;
+  }, [pncpHistCatmat, preview, pncpUltimoByItem]);
 
   const [modalSelected, setModalSelected] = useState<number[]>([]);
   const [modalMethod, setModalMethod] = useState<"media" | "mediana">("media");
@@ -196,6 +203,8 @@ export default function Page() {
     setPreview([]);
     setOverrides({});
     setLastQuotes({});
+    setPncpUltimoByItem({});
+    closePncpHistorico();
     setModalItemId(null);
     setActiveLastQuoteRow(null);
     setStatus("");
@@ -321,6 +330,80 @@ export default function Page() {
     });
   }
 
+  async function hydratePncpUltimo(items: PreviewItem[]) {
+    try {
+      const catmats = Array.from(
+        new Set(
+          (items || [])
+            .map((it) => String(it.catmat || "").trim())
+            .filter((c) => c && /^\d+$/.test(c))
+        )
+      );
+      if (!catmats.length) return;
+
+      setPncpUltimoLoading(true);
+      const res = await fetch("/api/ultimo_licitado", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catmats }),
+      });
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const byCatmat: Record<string, PncpUltimoInfo> = data?.by_catmat || {};
+
+      const byItem: Record<string, PncpUltimoInfo> = {};
+      const nextLastQuotes: Record<string, string> = {};
+      for (const it of items || []) {
+        const c = String(it.catmat || "").trim();
+        const info = byCatmat[c];
+        if (info) {
+          byItem[it.item] = info;
+          // Pré-preenche o input do último licitado com o último resultado unitário, se existir
+          if (typeof info.valor_unitario_resultado_num === "number" && Number.isFinite(info.valor_unitario_resultado_num)) {
+            nextLastQuotes[it.item] = fmtSmart(info.valor_unitario_resultado_num);
+          }
+        }
+      }
+
+      setPncpUltimoByItem(byItem);
+      setLastQuotes((prev) => ({ ...nextLastQuotes, ...prev }));
+    } finally {
+      setPncpUltimoLoading(false);
+    }
+  }
+
+  async function openPncpHistorico(catmat: string) {
+    const c = String(catmat || "").trim();
+    if (!c || !/^\d+$/.test(c)) return;
+    setPncpHistOpen(true);
+    setPncpHistCatmat(c);
+    setPncpHistError("");
+    setPncpHistRows([]);
+    setPncpHistLoading(true);
+    try {
+      const res = await fetch(`/api/catmat_historico?catmat=${encodeURIComponent(c)}`);
+      if (!res.ok) {
+        const msg = await res.text();
+        setPncpHistError(msg || "Falha ao consultar histórico.");
+        return;
+      }
+      const data = await res.json();
+      setPncpHistRows((data.rows || []) as PncpHistoricoRow[]);
+    } catch (e: any) {
+      setPncpHistError(String(e));
+    } finally {
+      setPncpHistLoading(false);
+    }
+  }
+
+  function closePncpHistorico() {
+    setPncpHistOpen(false);
+    setPncpHistCatmat("");
+    setPncpHistError("");
+    setPncpHistRows([]);
+  }
+
   async function loadPreview() {
     if (!file) {
       setStatus("Selecione um PDF primeiro.");
@@ -345,10 +428,11 @@ export default function Page() {
       const data = await res.json();
       const items = (data.items || []) as PreviewItem[];
       setPreview(items);
-
-      // Auto-preenche "Último licitado" via Neon (quando disponível)
-      await hydrateLastQuotesFromNeon(items);
-      setStatus("Prévia carregada. Preencha o último licitado e, se necessário, ajuste manualmente.");
+      // Consulta Neon (PNCP) para preencher automaticamente o "Último licitado" e mostrar contexto.
+      await hydratePncpUltimo(items);
+      setStatus(
+        "Prévia carregada. Confira os dados PNCP e, se necessário, ajuste manualmente."
+      );
       setPreviewReady(true);
     } catch (e: any) {
       setStatus(`Falha ao gerar prévia: ${String(e)}`);
@@ -765,26 +849,75 @@ export default function Page() {
                     {fmtBRL(r.valor_calculado)}
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
-                    <input
-                      value={lastQuotes[r.item] || ""}
-                      onChange={(e) =>
-                        setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
-                      }
-                      onFocus={() => setActiveLastQuoteRow(r.item)}
-                      onBlur={() =>
-                        setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))
-                      }
-                      placeholder="ex: 1.234,56"
-                      style={{
-                        width: 88,
-                        fontSize: 13,
-                        padding: "3px 6px",
-                        border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
-                        borderRadius: 6,
-                        outline: "none",
-                        background: isActive ? "#ffffff" : undefined,
-                      }}
-                    />
+                    <div style={{ display: "grid", gap: 6, justifyItems: "center" }}>
+                      <input
+                        value={lastQuotes[r.item] || ""}
+                        onChange={(e) =>
+                          setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
+                        }
+                        onFocus={() => setActiveLastQuoteRow(r.item)}
+                        onBlur={() =>
+                          setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))
+                        }
+                        placeholder="ex: 1.234,56"
+                        style={{
+                          width: 88,
+                          fontSize: 13,
+                          padding: "3px 6px",
+                          border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
+                          borderRadius: 6,
+                          outline: "none",
+                          background: isActive ? "#ffffff" : undefined,
+                        }}
+                      />
+
+                      <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.2 }}>
+                        {(() => {
+                          const info = pncpUltimoByItem[r.item];
+                          if (pncpUltimoLoading) return "Consultando PNCP...";
+                          if (!info) return "";
+                          const resTxt =
+                            info.status === "ok"
+                              ? `Últ. licitado: R$ ${fmtSmart(info.valor_unitario_resultado_num)}`
+                              : info.status === "fracassado"
+                              ? "Últ. licitado: Fracassado"
+                              : "Sem registro";
+                          const estTxt =
+                            typeof info.valor_unitario_estimado_num === "number"
+                              ? `Últ. estimado: R$ ${fmtSmart(info.valor_unitario_estimado_num)}`
+                              : "";
+                          const p = info.pregao ? `Pregão ${info.pregao}` : "";
+                          const forn = info.nome_fornecedor ? info.nome_fornecedor : "";
+                          const d = info.data_resultado_br ? `Data ${info.data_resultado_br}` : "";
+                          const line2 = [p, forn].filter(Boolean).join(" | ");
+                          const line3 = [d].filter(Boolean).join(" ");
+                          return (
+                            <>
+                              <div>{[resTxt, estTxt].filter(Boolean).join(" | ")}</div>
+                              {line2 && <div>{line2}</div>}
+                              {line3 && <div>{line3}</div>}
+                            </>
+                          );
+                        })()}
+                      </div>
+
+                      <button
+                        type="button"
+                        className="btn btnGhost"
+                        onClick={() => openPncpHistorico(r.catmat)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 12,
+                          borderRadius: 8,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                          cursor: "pointer",
+                        }}
+                        title="Abrir histórico completo no PNCP"
+                      >
+                        Histórico
+                      </button>
+                    </div>
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.modo}</td>
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
@@ -1042,6 +1175,128 @@ export default function Page() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: histórico PNCP */}
+      {pncpHistOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 55,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closePncpHistorico();
+          }}
+        >
+          <div
+            style={{
+              width: "min(1050px, 100%)",
+              background: "white",
+              borderRadius: 8,
+              padding: 16,
+              maxHeight: "85vh",
+              overflowY: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Histórico PNCP — CATMAT {pncpHistCatmat}</h2>
+                {pncpUltForModal && (
+                  <div style={{ marginTop: 6, color: "#374151", fontSize: 13, lineHeight: 1.35 }}>
+                    <strong>Último registro:</strong>{" "}
+                    {pncpUltForModal.status === "ok"
+                      ? `R$ ${fmtSmart(pncpUltForModal.valor_unitario_resultado_num)}`
+                      : pncpUltForModal.status === "fracassado"
+                      ? "Fracassado"
+                      : "Sem registro"}
+                    {pncpUltForModal.pregao ? ` | Pregão ${pncpUltForModal.pregao}` : ""}
+                    {pncpUltForModal.nome_fornecedor ? ` | ${pncpUltForModal.nome_fornecedor}` : ""}
+                    {pncpUltForModal.data_resultado_br ? ` | ${pncpUltForModal.data_resultado_br}` : ""}
+                  </div>
+                )}
+              </div>
+              <button className="btn btnGhost" onClick={closePncpHistorico}>
+                Fechar
+              </button>
+            </div>
+
+            {pncpHistLoading && <div style={{ marginTop: 12 }}>Carregando histórico...</div>}
+            {!!pncpHistError && (
+              <div style={{ marginTop: 12, color: "#b91c1c", whiteSpace: "pre-wrap" }}>{pncpHistError}</div>
+            )}
+
+            {!pncpHistLoading && !pncpHistError && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 8 }}>
+                  {pncpHistRows.length} registro(s) encontrado(s).
+                </div>
+                <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: 10 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: "#f7f7f7" }}>
+                        {[
+                          "Data",
+                          "Pregão",
+                          "Fornecedor",
+                          "Situação",
+                          "Vlr. estimado (R$)",
+                          "Vlr. licitado (R$)",
+                          "Link",
+                        ].map((h) => (
+                          <th
+                            key={h}
+                            style={{
+                              borderBottom: "1px solid #e5e7eb",
+                              padding: "10px 10px",
+                              textAlign: "center",
+                              whiteSpace: "nowrap",
+                              fontWeight: 800,
+                            }}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pncpHistRows.map((r, i) => (
+                        <tr key={`${r.id_compra_item || i}`} style={{ background: i % 2 === 0 ? "#ffffff" : "#f9fafb" }}>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>{r.data_resultado_br || "-"}</td>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>{r.pregao || "-"}</td>
+                          <td style={{ padding: "8px 10px" }}>{r.nome_fornecedor || "-"}</td>
+                          <td style={{ padding: "8px 10px" }}>{r.situacao_compra_item_nome || "-"}</td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                            {typeof r.valor_unitario_estimado_num === "number" ? fmtSmart(r.valor_unitario_estimado_num) : "-"}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                            {typeof r.valor_unitario_resultado_num === "number"
+                              ? fmtSmart(r.valor_unitario_resultado_num)
+                              : "Fracassado"}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                            {r.compra_link ? (
+                              <a href={r.compra_link} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
+                                Abrir
+                              </a>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
