@@ -129,6 +129,51 @@ export default function Page() {
   const [lastQuotes, setLastQuotes] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, ManualOverride>>({});
 
+  async function hydrateLastQuotesFromNeon(items: PreviewItem[]) {
+    try {
+      const catmats = Array.from(
+        new Set(
+          (items || [])
+            .map((it) => String(it.catmat || "").trim())
+            .filter((c) => /^\d{6}$/.test(c))
+        )
+      );
+
+      if (!catmats.length) return;
+
+      const res = await fetch("/api/ultimo_licitado", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catmats }),
+      });
+
+      if (!res.ok) return;
+      const data = await res.json();
+      const byCatmat = (data?.by_catmat || {}) as Record<
+        string,
+        { status: string; valor_unitario_resultado_num: number | null }
+      >;
+
+      setLastQuotes((prev) => {
+        const next = { ...prev };
+        for (const it of items || []) {
+          const c = String(it.catmat || "").trim();
+          const row = byCatmat[c];
+          if (!row) continue;
+
+          if (row.status === "ok" && typeof row.valor_unitario_resultado_num === "number") {
+            next[it.item] = fmtSmart(row.valor_unitario_resultado_num);
+          } else if (row.status === "fracassado") {
+            next[it.item] = "Fracassado";
+          }
+        }
+        return next;
+      });
+    } catch {
+      // Silencioso: não impede o fluxo da prévia.
+    }
+  }
+
   // Modal state
   const [modalItemId, setModalItemId] = useState<string | null>(null);
   const modalItem = useMemo(
@@ -298,7 +343,11 @@ export default function Page() {
         return;
       }
       const data = await res.json();
-      setPreview((data.items || []) as PreviewItem[]);
+      const items = (data.items || []) as PreviewItem[];
+      setPreview(items);
+
+      // Auto-preenche "Último licitado" via Neon (quando disponível)
+      await hydrateLastQuotesFromNeon(items);
       setStatus("Prévia carregada. Preencha o último licitado e, se necessário, ajuste manualmente.");
       setPreviewReady(true);
     } catch (e: any) {
