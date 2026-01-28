@@ -9,6 +9,7 @@ type ToolLink = { label: string; href: string; desc?: string };
 const MAIN_TOOLS: ToolLink[] = [
   { label: "Preços de Referência", href: "/precos", desc: "Geração dos Relatórios de Preços de Referência" },
   { label: "Consulta CATMAT", href: "/catmat", desc: "Busca por CATMATs inativos" },
+  { label: "Arquivamentos", href: "/arquivamentos", desc: "Histórico de arquivamentos (R2)" },
 ];
 
 const MANUAL_TOOL: ToolLink = {
