@@ -13,7 +13,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         - maxWidth: 100% (antes 1200)
         - padding lateral: 6px (antes 16px)
       */}
-      <div style={{ maxWidth: "80%", margin: "0 auto", padding: "1 6px" }}>
+      <div style={{ maxWidth: "80%", margin: "0 auto", padding: "0 6px" }}>
         <Header />
         <Tabs />
         {children}
