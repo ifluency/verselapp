@@ -425,4 +425,715 @@ export default function PrecosPage() {
 
   return (
     <div style={{ paddingBottom: 120 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ fontSize: 20, margin: "12px 0 6px", fontWeight: 800 }}>
+            Análise de Preços – UPDE (HUSM/UFSM)
+          </h1>
+          <div style={{ color: "#4b5563", fontSize: 13 }}>
+            Fluxo: Upload → Prévia → Último licitado (PNCP) → Ajuste manual → ZIP (2 PDFs)
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <label className="btn btnPrimary" style={{ cursor: "pointer" }}>
+            Escolher PDF
+            <input
+              type="file"
+              accept="application/pdf"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setFile(f);
+                setPreview([]);
+                setPreviewReady(false);
+                setOverrides({});
+                setLastQuotes({});
+                setStatus("");
+              }}
+            />
+          </label>
+
+          <button
+            type="button"
+            className="btn btnSecondary"
+            disabled={!file || loadingPreview}
+            onClick={loadPreview}
+            style={{
+              opacity: !file || loadingPreview ? 0.6 : 1,
+            }}
+          >
+            {loadingPreview ? "Gerando..." : "Gerar prévia"}
+          </button>
+
+          <button
+            type="button"
+            className="btn btnSuccess"
+            disabled={!canGenerate || loadingGenerate}
+            onClick={generateZip}
+            style={{
+              opacity: !canGenerate || loadingGenerate ? 0.6 : 1,
+            }}
+          >
+            {loadingGenerate ? "Gerando ZIP..." : "Baixar ZIP (2 PDFs)"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10, marginBottom: 10, color: "#111827", fontSize: 13 }}>
+        {status}
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          flexWrap: "wrap",
+          alignItems: "flex-end",
+          marginBottom: 10,
+          padding: "10px 10px",
+          border: "1px solid #e5e7eb",
+          borderRadius: 10,
+          background: "#fbfbfb",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 12, color: "#6b7280" }}>Número da Lista (obrigatório)</div>
+          <input
+            value={numeroLista}
+            onChange={(e) => setNumeroLista(e.target.value)}
+            placeholder="ex: 001/2026"
+            className="input"
+            style={{ width: 160 }}
+          />
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 240 }}>
+          <div style={{ fontSize: 12, color: "#6b7280" }}>Nome da Lista (obrigatório)</div>
+          <input
+            value={nomeLista}
+            onChange={(e) => setNomeLista(e.target.value)}
+            placeholder="ex: Materiais hospitalares"
+            className="input"
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 12, color: "#6b7280" }}>Processo SEI (obrigatório)</div>
+          <input
+            value={processoSEI}
+            onChange={(e) => setProcessoSEI(e.target.value)}
+            placeholder="ex: 00000.000000/2026-00"
+            className="input"
+            style={{ width: 220 }}
+          />
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 12, color: "#6b7280" }}>Responsável (obrigatório)</div>
+          <input
+            value={responsavel}
+            onChange={(e) => setResponsavel(e.target.value)}
+            placeholder="ex: Nome completo"
+            className="input"
+            style={{ width: 220 }}
+          />
+        </div>
+
+        {!canGenerate && preview.length > 0 && (
+          <div style={{ color: "#c62828", fontWeight: 600, marginLeft: "auto" }}>
+            Preencha os campos obrigatórios para liberar o ZIP.
+          </div>
+        )}
+      </div>
+
+      {previewReady && preview.length > 0 && (
+        <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: 12 }}>
+          <div style={{ padding: "8px 10px", background: "#f8fafc", borderBottom: "1px solid #e5e7eb" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 800 }}>Prévia</div>
+              <span style={{ fontSize: 12, color: "#4b5563", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {file?.name || ""}
+              </span>
+              <div style={{ marginLeft: "auto", fontSize: 12, color: "#4b5563" }}>
+                Itens: <b>{preview.length}</b>
+              </div>
+            </div>
+          </div>
+
+          <table
+            style={{
+              borderCollapse: "collapse",
+              width: "100%",
+              tableLayout: "fixed",
+              fontSize: 14,
+            }}
+          >
+            <colgroup>
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "9%" }} />
+              {/* Último licitado precisa de mais espaço para fornecedor (dados carregam após a prévia) */}
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "6%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "10%" }} />
+            </colgroup>
+            <thead>
+              <tr>
+                {[
+                  "Item",
+                  "Catmat",
+                  "Entradas iniciais",
+                  "Entradas finais",
+                  "Excl. altos",
+                  "Excl. inexequíveis",
+                  "Valor calculado",
+                  "Último licitado",
+                  "Modo",
+                  "Valor final",
+                  "Dif. (R$)",
+                  "Ajuste",
+                ].map((h) => (
+                  <th
+                    key={h}
+                    style={{
+                      border: "1px solid #ddd",
+                      padding: "8px 8px",
+                      background: "#f7f7f7",
+                      textAlign: "center",
+                      whiteSpace: "normal",
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows.map((r, rowIdx) => {
+                const isActive = activeLastQuoteRow === r.item;
+                const baseBg = rowIdx % 2 === 0 ? "#ffffff" : "#f4f4f4";
+                return (
+                  <tr
+                    key={r.item}
+                    style={{
+                      background: isActive ? "#e8f4ff" : baseBg,
+                      boxShadow: isActive ? "inset 0 0 0 2px #1976d2" : undefined,
+                      position: isActive ? "relative" : undefined,
+                      transition: "background 120ms ease, box-shadow 120ms ease",
+                    }}
+                  >
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.item}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.catmat}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_bruto}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_final}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_altos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_baixos}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                    {fmtBRL(r.valor_calculado)}
+                  </td>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px", textAlign: "center", minWidth: 230 }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                      <input
+                        value={lastQuotes[r.item] || ""}
+                        onChange={(e) =>
+                          setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
+                        }
+                        onFocus={() => setActiveLastQuoteRow(r.item)}
+                        onBlur={() =>
+                          setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))
+                        }
+                        placeholder="ex: 1.234,56"
+                        style={{
+                          width: 104,
+                          fontSize: 13,
+                          padding: "3px 6px",
+                          border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
+                          borderRadius: 6,
+                          outline: "none",
+                          background: isActive ? "#ffffff" : undefined,
+                        }}
+                      />
+
+                      <div
+                        style={{
+                          width: 200,
+                          textAlign: "center",
+                          fontSize: 11,
+                          color: "#374151",
+                          lineHeight: "14px",
+                        }}
+                      >
+                        {(() => {
+                          const info = pncpUltimoByItem[r.item];
+                          if (pncpUltimoLoading) return "Consultando PNCP...";
+                          if (!info) return "";
+
+                          const pe = info.pregao ? `PE ${info.pregao}` : "";
+                          const d = info.data_resultado_br || "";
+
+                          const line3 =
+                            info.status === "fracassado"
+                              ? "FRACASSADO"
+                              : info.nome_fornecedor ||
+                                (info.status === "nao_encontrado" ? "Sem registro" : "");
+
+                          return (
+                            <>
+                              {pe && <div style={LAST_LIC_LINE_STYLE} title={pe}>{pe}</div>}
+                              {d && <div style={LAST_LIC_LINE_STYLE} title={d}>{d}</div>}
+                              {line3 && (
+                                <div
+                                  style={{
+                                    width: "100%",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                  title={line3}
+                                >
+                                  {line3}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
+
+                      <button
+                        type="button"
+                        className="btn btnGhost"
+                        onClick={() => openPncpHistorico(r.catmat)}
+                        style={{
+                          padding: "1px 10px",
+                          fontSize: 11,
+                          lineHeight: "18px",
+                          height: 22,
+                          borderRadius: 6,
+                        }}
+                      >
+                        Histórico
+                      </button>
+                    </div>
+                  </td>
+
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                    {r.method}
+                  </td>
+
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                    {fmtBRL(r.valor_final)}
+                    <div style={{ fontSize: 11, color: "#6b7280" }}>
+                      CV: {pct2(r.cv_val)}
+                    </div>
+                  </td>
+
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                    {fmtSmart(r.dif)}
+                  </td>
+
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                    <button
+                      type="button"
+                      className="btn btnWarning"
+                      onClick={() => openManualFor(r.item)}
+                      style={{
+                        padding: "6px 10px",
+                        fontSize: 12,
+                        borderRadius: 8,
+                        background: r.has_override ? "#16a34a" : "#f59e0b",
+                        color: "#fff",
+                        border: "none",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {r.has_override ? "Ajustado" : "Ajustar"}
+                    </button>
+                  </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Modal PNCP Histórico */}
+      {pncpHistOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 18,
+            zIndex: 60,
+          }}
+          onClick={closePncpHistorico}
+        >
+          <div
+            style={{
+              width: "min(1100px, 98vw)",
+              maxHeight: "85vh",
+              background: "#fff",
+              borderRadius: 12,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: "12px 14px",
+                borderBottom: "1px solid #e5e7eb",
+                background: "#f8fafc",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 15 }}>
+                  Histórico PNCP — CATMAT {pncpHistCatmat}
+                </div>
+                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                  Itens mais recentes (criterio_julgamento_id_pncp = 1)
+                </div>
+              </div>
+              <button type="button" className="btn btnGhost" onClick={closePncpHistorico}>
+                Fechar
+              </button>
+            </div>
+
+            <div style={{ padding: 14, overflow: "auto" }}>
+              {pncpHistLoading ? (
+                <div style={{ color: "#4b5563" }}>Consultando histórico...</div>
+              ) : pncpHistError ? (
+                <div style={{ color: "#c62828", whiteSpace: "pre-wrap" }}>{pncpHistError}</div>
+              ) : !pncpHistRows.length ? (
+                <div style={{ color: "#4b5563" }}>Nenhum registro encontrado.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      {[
+                        "#",
+                        "PE",
+                        "Data",
+                        "Fornecedor / Situação",
+                        "Qtd",
+                        "Estimado",
+                        "Resultado",
+                        "Link",
+                      ].map((h) => (
+                        <th
+                          key={h}
+                          style={{
+                            border: "1px solid #e5e7eb",
+                            background: "#f7f7f7",
+                            padding: "8px 8px",
+                            textAlign: "left",
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pncpHistRows.map((row, idx) => (
+                      <tr key={`${row.id_compra_item}-${idx}`}>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          {idx + 1}
+                        </td>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          {row.pregao ? `PE ${row.pregao}` : ""}
+                        </td>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          {row.data_resultado_br || ""}
+                        </td>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          <div style={{ fontWeight: 700 }}>
+                            {row.resultado_status === "fracassado"
+                              ? "FRACASSADO"
+                              : row.nome_fornecedor || ""}
+                          </div>
+                          <div style={{ fontSize: 12, color: "#6b7280" }}>
+                            {row.situacao_compra_item_nome || ""}
+                          </div>
+                        </td>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          {row.quantidade ?? ""}
+                        </td>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          {fmtBRL(row.valor_unitario_estimado_num)}
+                        </td>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          {row.resultado_status === "fracassado"
+                            ? ""
+                            : fmtBRL(row.valor_unitario_resultado_num)}
+                        </td>
+                        <td style={{ border: "1px solid #e5e7eb", padding: "7px 8px" }}>
+                          {row.compra_link ? (
+                            <a href={row.compra_link} target="_blank" rel="noreferrer">
+                              Abrir
+                            </a>
+                          ) : (
+                            ""
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Ajuste Manual */}
+      {manualOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 18,
+            zIndex: 70,
+          }}
+          onClick={closeManual}
+        >
+          <div
+            style={{
+              width: "min(980px, 98vw)",
+              maxHeight: "85vh",
+              background: "#fff",
+              borderRadius: 12,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: "12px 14px",
+                borderBottom: "1px solid #e5e7eb",
+                background: "#f8fafc",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 15 }}>
+                  Ajuste manual — Item {manualItemId}
+                </div>
+                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                  Selecione quais valores entram no cálculo, método e justificativa.
+                </div>
+              </div>
+              <button type="button" className="btn btnGhost" onClick={closeManual}>
+                Fechar
+              </button>
+            </div>
+
+            <div style={{ padding: 14, overflow: "auto" }}>
+              {(() => {
+                const it = preview.find((x) => x.item === manualItemId);
+                if (!it) return null;
+
+                const valsSorted = [...it.valores_brutos].sort((a, b) => a.valor - b.valor);
+
+                const recomputeVals = valsSorted
+                  .filter((v) => manualIncluded.includes(v.idx))
+                  .map((v) => v.valor);
+
+                const vMean = mean(recomputeVals);
+                const vMedian = median(recomputeVals);
+                const vCv = cv(recomputeVals);
+
+                const lineStyle: React.CSSProperties = {
+                  padding: "8px 10px",
+                  borderBottom: "1px solid #eef2f7",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                };
+
+                return (
+                  <>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+                      <div style={{ flex: 1, minWidth: 260, border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
+                        <div style={{ background: "#f7f7f7", padding: "8px 10px", fontWeight: 900 }}>
+                          Valores brutos (ordem crescente)
+                        </div>
+                        <div>
+                          {valsSorted.map((v, i) => {
+                            const isIncluded = manualIncluded.includes(v.idx);
+                            const isAutoHigh = it.auto_excl_altos_idx.includes(v.idx);
+                            const isAutoLow = it.auto_excl_baixos_idx.includes(v.idx);
+
+                            const bg = isAutoHigh ? "#fee2e2" : isAutoLow ? "#fef9c3" : "#ffffff";
+
+                            return (
+                              <div key={v.idx} style={{ ...lineStyle, background: bg }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isIncluded}
+                                  onChange={() => toggleInclude(v.idx)}
+                                />
+                                <div style={{ width: 28, textAlign: "right", color: "#6b7280" }}>
+                                  {i + 1}
+                                </div>
+                                <div style={{ width: 110, fontWeight: 800 }}>{fmtSmart(v.valor)}</div>
+                                <div style={{ flex: 1, color: "#374151" }}>{v.fonte}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div style={{ width: 320, display: "flex", flexDirection: "column", gap: 10 }}>
+                        <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12 }}>
+                          <div style={{ fontWeight: 900, marginBottom: 6 }}>Recalcular</div>
+
+                          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <input
+                                type="radio"
+                                checked={manualMethod === "mediana"}
+                                onChange={() => setManualMethod("mediana")}
+                              />
+                              Mediana
+                            </label>
+                            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <input
+                                type="radio"
+                                checked={manualMethod === "media"}
+                                onChange={() => setManualMethod("media")}
+                              />
+                              Média
+                            </label>
+                          </div>
+
+                          <div style={{ fontSize: 13, color: "#111827" }}>
+                            <div>Valores selecionados: <b>{recomputeVals.length}</b></div>
+                            <div>Média: <b>{fmtBRL(vMean)}</b></div>
+                            <div>Mediana: <b>{fmtBRL(vMedian)}</b></div>
+                            <div>CV: <b>{pct2(vCv)}</b></div>
+                          </div>
+                        </div>
+
+                        <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12 }}>
+                          <div style={{ fontWeight: 900, marginBottom: 6 }}>Justificativa</div>
+
+                          <select
+                            value={manualJust}
+                            onChange={(e) => setManualJust(e.target.value)}
+                            className="input"
+                            style={{ width: "100%", marginBottom: 8 }}
+                          >
+                            <option value="PADRAO_1">Padrão 1</option>
+                            <option value="PADRAO_2">Padrão 2</option>
+                            <option value="OUTRO">Outro</option>
+                          </select>
+
+                          <div style={{ fontSize: 12, color: "#374151", marginBottom: 6 }}>
+                            {manualJust === "OUTRO" ? "" : JUST_OPTIONS[manualJust] || ""}
+                          </div>
+
+                          {manualJust === "OUTRO" && (
+                            <textarea
+                              value={manualJustOther}
+                              onChange={(e) => setManualJustOther(e.target.value)}
+                              placeholder="Descreva a justificativa..."
+                              className="input"
+                              style={{ width: "100%", height: 90, resize: "vertical" }}
+                            />
+                          )}
+                        </div>
+
+                        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                          <button type="button" className="btn btnGhost" onClick={closeManual}>
+                            Cancelar
+                          </button>
+                          <button type="button" className="btn btnSuccess" onClick={saveManual}>
+                            Salvar ajuste
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Footer fixo */}
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(255,255,255,0.92)",
+          borderTop: "1px solid #e5e7eb",
+          padding: "8px 6px",
+          backdropFilter: "blur(6px)",
+        }}
+      >
+        <div
+          style={{
+            maxWidth: "100%",
+            margin: "0 auto",
+            display: "flex",
+            gap: 10,
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ color: "#4b5563", fontSize: 13 }}>
+            {loadingGenerate
+              ? "Gerando ZIP..."
+              : loadingPreview
+              ? "Gerando prévia..."
+              : preview.length
+              ? "Prévia pronta. Preencha os campos obrigatórios e gere o ZIP."
+              : file
+              ? "Arquivo selecionado. Gere a prévia para continuar."
+              : "Selecione um PDF do ComprasGOV (Relatório Resumido)."}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              CV exibido em % com 2 casas.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
