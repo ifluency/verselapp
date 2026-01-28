@@ -8,7 +8,12 @@ import Tabs from "../components/Tabs";
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGuard>
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "0 16px" }}>
+      {/*
+        Layout global: reduz margens laterais para dar mais área útil às tabelas.
+        - maxWidth: 100% (antes 1200)
+        - padding lateral: 6px (antes 16px)
+      */}
+      <div style={{ maxWidth: "100%", margin: "0 auto", padding: "0 6px" }}>
         <Header />
         <Tabs />
         {children}
