@@ -1,60 +1,100 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+/**
+ * Observação:
+ * - Este arquivo é grande porque concentra o fluxo completo: upload → prévia → último licitado → ajuste manual → geração de PDFs ZIP.
+ * - Ajustes feitos nesta revisão:
+ *   1) Vazamento de texto na coluna “Último licitado” (ellipsis/nowrap em todas as linhas).
+ *   2) Histórico PNCP: corrigido mapeamento para o formato retornado pelo endpoint /api/catmat_historico.
+ *   3) Barra fixa/containers: largura e padding alinhados às novas margens globais (≈1/3).
+ */
 
 type PreviewItem = {
   item: string;
-  catmat: string;
+  catmat: number | null;
   n_bruto: number;
   n_final: number;
   excl_altos: number;
   excl_baixos: number;
   valor_calculado: number | null;
-  valores_brutos: { idx: number; valor: number; fonte: string }[];
-  auto_keep_idx: number[];
-  auto_excl_altos_idx: number[];
-  auto_excl_baixos_idx: number[];
+  modo: "Auto" | "Manual" | string;
+  metodo: string;
+  valor_final: number | null;
+  rep?: any;
 };
 
-type ManualOverride = {
-  includedIndices: number[];
-  method: "media" | "mediana";
-  justificativaCodigo: string;
-  justificativaTexto: string;
+type OverrideData = {
+  modo: "Manual";
+  selecionados: number[]; // índices dos valores brutos selecionados
+  justificativa: string; // texto final
+  justificativa_code?: string;
 };
 
-type PncpUltimoInfo = {
-  catmat: string;
-  status: "ok" | "fracassado" | "nao_encontrado";
-  data_resultado_iso: string | null;
-  data_resultado_br: string;
-  id_compra: string;
-  pregao: string;
-  compra_link: string;
-  nome_fornecedor: string;
-  valor_unitario_estimado_num: number | null;
-  valor_unitario_resultado_num: number | null;
+type ManualEntry = {
+  idx: number;
+  valor: number;
+  fonte?: string;
 };
+
+type ManualModalState = {
+  open: boolean;
+  itemId: string;
+  entries: ManualEntry[];
+  selected: Set<number>;
+  autoKept: Set<number>;
+  autoExclAltos: Set<number>;
+  autoExclBaixos: Set<number>;
+  justificativa: string;
+  justificativaOutro: string;
+  justificativaSelected: string;
+  previewItem?: PreviewItem;
+};
+
+type PncpUltimoInfo =
+  | {
+      status: "ok";
+      catmat: string;
+      data_resultado_iso: string | null;
+      data_resultado_br: string;
+      pregao: string;
+      numero_item_pncp: number | null;
+      valor_unitario_estimado_num: number | null;
+      valor_unitario_resultado_num: number | null;
+      nome_fornecedor: string;
+      situacao_compra_item_nome: string;
+      compra_link: string;
+    }
+  | {
+      status: "fracassado";
+      catmat: string;
+      data_resultado_iso: string | null;
+      data_resultado_br: string;
+      pregao: string;
+      numero_item_pncp: number | null;
+      valor_unitario_estimado_num: number | null;
+      valor_unitario_resultado_num: null;
+      nome_fornecedor: string;
+      situacao_compra_item_nome: string;
+      compra_link: string;
+    }
+  | {
+      status: "nao_encontrado";
+      catmat: string;
+    };
 
 type PncpHistoricoRow = {
-  catmat: string;
-  descricao_resumida: string;
-  material_ou_servico: string;
-  unidade_medida: string;
-  id_compra: string;
-  id_compra_item: string;
-  numero_controle_pncp_compra: string;
-  codigo_modalidade: number | null;
+  seq: number;
   data_resultado_iso: string | null;
   data_resultado_br: string;
   pregao: string;
-  quantidade: number | null;
-  valor_unitario_estimado_num: number | null;
-  valor_unitario_resultado_num: number | null;
-  resultado_status: "ok" | "fracassado";
-  nome_fornecedor: string;
-  situacao_compra_item_nome: string;
-  compra_link: string;
+  numero_item_pncp: number | null;
+  situacao: string;
+  fornecedor: string;
+  link: string;
+  valor_estimado_num: number | null;
+  valor_licitado_num: number | null;
 };
 
 function parseBRL(input: string): number | null {
@@ -79,244 +119,211 @@ function safeSlug(input: string): string {
 
 function fmtBRL(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "";
-  // Formato simples PT-BR: 1234.56 -> 1234,56 (sem milhares para manter consistente)
   return n.toFixed(2).replace(".", ",");
 }
 
 function fmtSmart(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "";
-  const dec = Math.abs(n) >= 1 ? 2 : 4;
-  return n.toFixed(dec).replace(".", ",");
+  if (n >= 1) return n.toFixed(2).replace(".", ",");
+  return n.toFixed(4).replace(".", ",");
 }
 
-function mean(vals: number[]): number | null {
-  if (!vals.length) return null;
-  return vals.reduce((a, b) => a + b, 0) / vals.length;
+function nowPtBR(): string {
+  const d = new Date();
+  const pad2 = (x: number) => String(x).padStart(2, "0");
+  return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()} ${pad2(
+    d.getHours()
+  )}:${pad2(d.getMinutes())}`;
 }
 
-function median(vals: number[]): number | null {
-  if (!vals.length) return null;
-  const s = [...vals].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  if (s.length % 2 === 1) return s[mid];
-  return (s[mid - 1] + s[mid]) / 2;
-}
+const SHOW_DEBUG = false; // apenas desativar UI; manter funcionalidade no código
 
-function cv(vals: number[]): number | null {
-  const m = mean(vals);
-  if (m === null || m === 0) return null;
-  const variance = vals.reduce((acc, v) => acc + (v - m) * (v - m), 0) / vals.length;
-  const std = Math.sqrt(variance);
-  return std / m;
-}
-
-function pct2(x: number | null): string {
-  if (x === null || !Number.isFinite(x)) return "";
-  return (x * 100).toFixed(2).replace(".", ",") + "%";
-}
-
-const JUST_OPTIONS: Record<string, string> = {
-  PADRAO_1:
-    "Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM para evitar a fixação de preço estimado potencialmente inexequível sob risco de fracasso do certame.",
-  PADRAO_2:
-    "Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM e discrepante da cotação do produto, cuja comercialização é exclusiva de fornecedor específico.",
-};
-
-
-export default function Page() {
+export default function PrecosPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<string>("");
-
-  // Permite negrito em mensagens vindas do backend (somente <b>/<strong>).
-  function sanitizeStatusHtml(s: string): string {
-    if (!s) return "";
-    let esc = s
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-    // Re-habilita apenas <b> e <strong> (incluindo fechamento)
-    esc = esc.replace(/&lt;(\/?)(\s*)(b|strong)(\s*)&gt;/gi, "<$1$3>");
-    esc = esc.replace(/\n/g, "<br/>");
-    return esc;
-  }
-
-  // Desativa "Gerar prévia" depois de gerar (reabilita ao trocar o arquivo)
-  const [previewReady, setPreviewReady] = useState(false);
-
-  // Campos obrigatórios para o PDF Tabela Comparativa de Valores
-  const [numeroLista, setNumeroLista] = useState<string>("");
-  const [nomeLista, setNomeLista] = useState<string>("");
-  const [processoSEI, setProcessoSEI] = useState<string>("");
-
-  const [responsavel, setResponsavel] = useState<string>("");
-
-  const reqBg = (v: string) => (v.trim() ? "#ffffff" : "#f3f4f6");
-  const reqBorder = (v: string) => (v.trim() ? "#cbd5e1" : "#ef4444");
-
-  // Destaque visual: linha atualmente em edição do "Último licitado"
-  const [activeLastQuoteRow, setActiveLastQuoteRow] = useState<string | null>(null);
-
-  const [preview, setPreview] = useState<PreviewItem[]>([]);
+  const [status, setStatus] = useState("");
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [loadingGenerate, setLoadingGenerate] = useState(false);
 
+  // Metadados obrigatórios (Lista/SEI/Responsável)
+  const [numeroLista, setNumeroLista] = useState("");
+  const [nomeLista, setNomeLista] = useState("");
+  const [processoSEI, setProcessoSEI] = useState("");
+  const [responsavel, setResponsavel] = useState("");
+
+  // Prévia de itens
+  const [preview, setPreview] = useState<PreviewItem[]>([]);
+  const [previewReady, setPreviewReady] = useState(false);
+
+  // Último licitado manual por item
   const [lastQuotes, setLastQuotes] = useState<Record<string, string>>({});
-  const [overrides, setOverrides] = useState<Record<string, ManualOverride>>({});
+  const [activeLastQuoteRow, setActiveLastQuoteRow] = useState<string | null>(null);
 
-  // Dados PNCP (Neon) — último registro por CATMAT
+  // Overrides manuais por item
+  const [overrides, setOverrides] = useState<Record<string, OverrideData>>({});
+
+  // PNCP (Neon) - preenchimento automático
+  const [pncpUltimoLoading, setPncpUltimoLoading] = useState(false);
   const [pncpUltimoByItem, setPncpUltimoByItem] = useState<Record<string, PncpUltimoInfo>>({});
-  const [pncpUltimoLoading, setPncpUltimoLoading] = useState<boolean>(false);
 
-  // Modal: histórico PNCP por CATMAT
-  const [pncpHistOpen, setPncpHistOpen] = useState<boolean>(false);
-  const [pncpHistCatmat, setPncpHistCatmat] = useState<string>("");
-  const [pncpHistLoading, setPncpHistLoading] = useState<boolean>(false);
-  const [pncpHistError, setPncpHistError] = useState<string>("");
+  // Modal Histórico PNCP
+  const [pncpHistOpen, setPncpHistOpen] = useState(false);
+  const [pncpHistCatmat, setPncpHistCatmat] = useState("");
+  const [pncpHistLoading, setPncpHistLoading] = useState(false);
+  const [pncpHistError, setPncpHistError] = useState("");
   const [pncpHistRows, setPncpHistRows] = useState<PncpHistoricoRow[]>([]);
 
-  // Modal state
-  const [modalItemId, setModalItemId] = useState<string | null>(null);
-  const modalItem = useMemo(
-    () => preview.find((p) => p.item === modalItemId) || null,
-    [preview, modalItemId]
-  );
+  // Modal Ajuste Manual
+  const [manualModal, setManualModal] = useState<ManualModalState>({
+    open: false,
+    itemId: "",
+    entries: [],
+    selected: new Set<number>(),
+    autoKept: new Set<number>(),
+    autoExclAltos: new Set<number>(),
+    autoExclBaixos: new Set<number>(),
+    justificativa: "",
+    justificativaOutro: "",
+    justificativaSelected: "",
+  });
 
-  const pncpUltForModal = useMemo(() => {
-    if (!pncpHistCatmat) return null;
-    const it = preview.find((p) => String(p.catmat || "").trim() === pncpHistCatmat);
-    if (!it) return null;
-    return pncpUltimoByItem[it.item] || null;
-  }, [pncpHistCatmat, preview, pncpUltimoByItem]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [modalSelected, setModalSelected] = useState<number[]>([]);
-  const [modalMethod, setModalMethod] = useState<"media" | "mediana">("media");
-  const [modalJustCode, setModalJustCode] = useState<string>("");
-  const [modalJustText, setModalJustText] = useState<string>("");
+  // Botões em foco (UX)
+  const [stepUploadDone, setStepUploadDone] = useState(false);
+  const [stepPreviewDone, setStepPreviewDone] = useState(false);
 
-  // UI flags
-  const SHOW_DEBUG = false; // ***desativado na UI (mantém a funcionalidade no backend)***
-  const focusChooseFile = !file;
-  const focusPreview = !!file && !previewReady;
+  // === Regras de cor do botão Ajustar ===
+  // - Vermelho: último licitado > valor final
+  // - Amarelo: valor final <= 1.2 * último licitado
+  // - Verde: já ajustado (override salvo)
+  // - Desabilitado: fora da regra
+  function getAdjustButtonState(itemId: string, valorFinal: number | null): {
+    enabled: boolean;
+    color: "red" | "yellow" | "green" | "disabled";
+  } {
+    const ov = overrides[itemId];
+    if (ov?.modo === "Manual") return { enabled: true, color: "green" };
 
-  // Ao trocar o arquivo, reseta o fluxo e reabilita a prévia
-  useEffect(() => {
-    setPreview([]);
-    setOverrides({});
-    setLastQuotes({});
-    setPncpUltimoByItem({});
-    closePncpHistorico();
-    setModalItemId(null);
-    setActiveLastQuoteRow(null);
-    setStatus("");
-    setPreviewReady(false);
-    setNumeroLista("");
-    setNomeLista("");
-    setProcessoSEI("");
-    setResponsavel("");
-  }, [file?.name, file?.size, file?.lastModified]);
-
-  const modalIdxToVal = useMemo(() => {
-    const m = new Map<number, number>();
-    if (modalItem) {
-      for (const e of modalItem.valores_brutos) {
-        if (typeof e.idx === "number" && typeof e.valor === "number") {
-          m.set(e.idx, e.valor);
-        }
-      }
+    const last = parseBRL(lastQuotes[itemId] || "");
+    if (!Number.isFinite(last as any) || !Number.isFinite(valorFinal as any) || valorFinal === null) {
+      return { enabled: false, color: "disabled" };
     }
-    return m;
-  }, [modalItem]);
 
-  const modalAutoExclAltos = useMemo(() => new Set(modalItem?.auto_excl_altos_idx || []), [modalItem]);
-  const modalAutoExclBaixos = useMemo(() => new Set(modalItem?.auto_excl_baixos_idx || []), [modalItem]);
+    if ((last as number) > (valorFinal as number)) return { enabled: true, color: "red" };
 
-  const modalSortedEntries = useMemo(() => {
-    if (!modalItem) return [] as { idx: number; valor: number; fonte: string }[];
-    return [...modalItem.valores_brutos].sort((a, b) => a.valor - b.valor);
-  }, [modalItem]);
+    if ((valorFinal as number) <= 1.2 * (last as number)) return { enabled: true, color: "yellow" };
 
-  const modalIncludedValues = useMemo(() => {
-    if (!modalItem) return [];
-    const vals: number[] = [];
-    for (const idx of modalSelected) {
-      const v = modalIdxToVal.get(idx);
-      if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
-    }
-    return vals;
-  }, [modalItem, modalSelected, modalIdxToVal]);
+    return { enabled: false, color: "disabled" };
+  }
 
-  const modalStats = useMemo(() => {
-    const m = mean(modalIncludedValues);
-    const med = median(modalIncludedValues);
-    const c = cv(modalIncludedValues);
-    const suggested = c === null ? "mediana" : c < 0.25 ? "media" : "mediana";
-    const finalVal = modalMethod === "media" ? m : med;
-    return { mean: m, median: med, cv: c, suggested, finalVal };
-  }, [modalIncludedValues, modalMethod]);
-
-  function closeModal() {
-    setModalItemId(null);
-    setModalSelected([]);
-    setModalMethod("media");
-    setModalJustCode("");
-    setModalJustText("");
+  function computeDif(itemId: string, valorFinal: number | null): number | null {
+    const last = parseBRL(lastQuotes[itemId] || "");
+    if (!Number.isFinite(last as any) || valorFinal === null || !Number.isFinite(valorFinal as any)) return null;
+    return (valorFinal as number) - (last as number);
   }
 
   function openManualModal(item: PreviewItem) {
-    // Só abre se elegível OU se já foi ajustado (para permitir reabrir/editar)
-    const existing = overrides[item.item];
-    const last = parseBRL(lastQuotes[item.item] || "");
-    const calc = item.valor_calculado;
-    const eligible = last !== null && last > 0 && calc !== null && calc <= 1.2 * last;
-    if (!eligible && !existing) return;
+    const rep = item.rep || {};
+    const vals: number[] = Array.isArray(rep.vals) ? rep.vals : [];
+    const fontes: (string | null)[] = Array.isArray(rep.fontes) ? rep.fontes : [];
 
-    setModalItemId(item.item);
+    const entries: ManualEntry[] = vals
+      .map((v, idx) => ({
+        idx,
+        valor: Number(v),
+        fonte: fontes[idx] ? String(fontes[idx]) : "",
+      }))
+      .filter((e) => Number.isFinite(e.valor))
+      .sort((a, b) => a.valor - b.valor);
 
-    // Inicializa com seleção sugerida pelo cálculo automático (mantidos)
-    const suggestedIdx = (item.auto_keep_idx && item.auto_keep_idx.length)
-      ? item.auto_keep_idx
-      : item.valores_brutos.map((e) => e.idx);
-    setModalSelected(suggestedIdx);
+    // auto kept/excluded indexes (com base no relatório)
+    const autoKept = new Set<number>((rep.mantidos_indices || rep.mantidos_idx || []) as number[]);
+    const autoExclAltos = new Set<number>((rep.excluidos_altos_idx || rep.excluidos_altos_indices || []) as number[]);
+    const autoExclBaixos = new Set<number>((rep.excluidos_baixos_idx || rep.excluidos_baixos_indices || []) as number[]);
 
-    // Se já existe override, carrega
-    if (existing) {
-      setModalSelected(existing.includedIndices);
-      setModalMethod(existing.method);
-      setModalJustCode(existing.justificativaCodigo);
-      setModalJustText(existing.justificativaTexto);
-    } else {
-      // Sugere método pelo CV (mas o usuário escolhe)
-      const baseCv = cv(item.valores_brutos.map((e) => e.valor));
-      const suggested = baseCv === null ? "mediana" : baseCv < 0.25 ? "media" : "mediana";
-      setModalMethod(suggested);
-      setModalJustCode("");
-      setModalJustText("");
+    // Seleciona por padrão os mantidos automáticos (mas lembrando que entries foi reordenado)
+    // Precisamos mapear: entries contém idx original => é o índice “real”
+    const selected = new Set<number>();
+    for (const e of entries) {
+      if (autoKept.has(e.idx)) selected.add(e.idx);
     }
-  }
 
-  function toggleModalIndex(idx: number) {
-    setModalSelected((prev) => {
-      if (prev.includes(idx)) return prev.filter((x) => x !== idx);
-      return [...prev, idx].sort((a, b) => a - b);
+    setManualModal({
+      open: true,
+      itemId: item.item,
+      entries,
+      selected,
+      autoKept,
+      autoExclAltos,
+      autoExclBaixos,
+      justificativa: "",
+      justificativaOutro: "",
+      justificativaSelected: "",
+      previewItem: item,
     });
   }
 
+  function closeModal() {
+    setManualModal((prev) => ({ ...prev, open: false }));
+  }
+
+  function toggleSelect(idx: number) {
+    setManualModal((prev) => {
+      const next = new Set(prev.selected);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return { ...prev, selected: next };
+    });
+  }
+
+  function computeStatsFromSelected(entries: ManualEntry[], selectedIdx: Set<number>) {
+    const arr = entries
+      .filter((e) => selectedIdx.has(e.idx))
+      .map((e) => e.valor)
+      .filter((v) => Number.isFinite(v))
+      .sort((a, b) => a - b);
+
+    const n = arr.length;
+    if (!n) return { n: 0, mean: null as number | null, median: null as number | null, cv: null as number | null };
+
+    const mean = arr.reduce((a, b) => a + b, 0) / n;
+    const median = n % 2 === 1 ? arr[(n - 1) / 2] : (arr[n / 2 - 1] + arr[n / 2]) / 2;
+
+    const variance = arr.reduce((acc, x) => acc + Math.pow(x - mean, 2), 0) / n;
+    const std = Math.sqrt(variance);
+    const cv = mean !== 0 ? std / mean : null;
+
+    return { n, mean, median, cv };
+  }
+
   function saveManualOverride() {
-    if (!modalItem) return;
-    if (!modalSelected.length) {
-      setStatus("Selecione ao menos 1 valor para o cálculo manual.");
+    const id = manualModal.itemId;
+    const entries = manualModal.entries;
+    const sel = manualModal.selected;
+
+    const stats = computeStatsFromSelected(entries, sel);
+    if (stats.n === 0) {
+      setStatus("Selecione ao menos 1 valor para salvar o ajuste manual.");
       return;
     }
-    const finalJustText =
-      modalJustCode && modalJustCode !== "OUTRO" ? JUST_OPTIONS[modalJustCode] || "" : modalJustText;
+
+    // Justificativa final: se selecionou "Outro", usa texto livre; caso contrário, usa texto do dropdown
+    const justificativaFinal =
+      manualModal.justificativaSelected === "OUTRO"
+        ? manualModal.justificativaOutro.trim()
+        : manualModal.justificativaSelected.trim();
+
+    if (!justificativaFinal) {
+      setStatus("Selecione uma justificativa ou preencha 'Outro'.");
+      return;
+    }
 
     setOverrides((prev) => ({
       ...prev,
-      [modalItem.item]: {
-        includedIndices: [...modalSelected].sort((a, b) => a - b),
-        method: modalMethod,
-        justificativaCodigo: modalJustCode,
-        justificativaTexto: finalJustText,
+      [id]: {
+        modo: "Manual",
+        selecionados: Array.from(sel.values()).sort((a, b) => a - b),
+        justificativa: justificativaFinal,
       },
     }));
     closeModal();
@@ -360,8 +367,11 @@ export default function Page() {
         if (info) {
           byItem[it.item] = info;
           // Pré-preenche o input do último licitado com o último resultado unitário, se existir
-          if (typeof info.valor_unitario_resultado_num === "number" && Number.isFinite(info.valor_unitario_resultado_num)) {
-            nextLastQuotes[it.item] = fmtSmart(info.valor_unitario_resultado_num);
+          if (
+            typeof (info as any).valor_unitario_resultado_num === "number" &&
+            Number.isFinite((info as any).valor_unitario_resultado_num)
+          ) {
+            nextLastQuotes[it.item] = fmtSmart((info as any).valor_unitario_resultado_num);
           }
         }
       }
@@ -415,31 +425,76 @@ export default function Page() {
     setPreview([]);
     setOverrides({});
     setLastQuotes({});
+    setPncpUltimoByItem({});
 
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch("/api/preview", { method: "POST", body: form });
+
+      const res = await fetch("/api/preview", {
+        method: "POST",
+        body: form,
+      });
+
       if (!res.ok) {
         const msg = await res.text();
-        setStatus(`Falha ao gerar prévia: ${msg}`);
+        setStatus(`Falha ao gerar prévia:\n${msg}`);
         return;
       }
+
       const data = await res.json();
-      const items = (data.items || []) as PreviewItem[];
+      const items: PreviewItem[] = data?.items || [];
       setPreview(items);
-      // Consulta Neon (PNCP) para preencher automaticamente o "Último licitado" e mostrar contexto.
-      await hydratePncpUltimo(items);
-      setStatus(
-        "Prévia carregada. Confira os dados PNCP e, se necessário, ajuste manualmente."
-      );
       setPreviewReady(true);
+      setStatus("Prévia gerada.");
+
+      // PNCP auto-fill
+      await hydratePncpUltimo(items);
+
+      setStepPreviewDone(true);
     } catch (e: any) {
-      setStatus(`Falha ao gerar prévia: ${String(e)}`);
+      setStatus(`Falha ao gerar prévia:\n${String(e)}`);
     } finally {
       setLoadingPreview(false);
     }
   }
+
+  const tableRows = useMemo(() => {
+    const rows = preview.map((it) => {
+      const ov = overrides[it.item];
+      const finalValue = ov?.modo === "Manual" ? computeManualFinal(it, ov) : it.valor_final;
+
+      // A.F. em manual deve ser o número de não deselecionados (selecionados)
+      const nFinalManual = ov?.modo === "Manual" ? ov.selecionados.length : it.n_final;
+
+      return {
+        ...it,
+        n_final: nFinalManual,
+        modo: ov?.modo === "Manual" ? "Manual" : it.modo === "Auto" ? "Automático" : it.modo,
+        valor_final: finalValue,
+      };
+    });
+    return rows;
+  }, [preview, overrides]);
+
+  function computeManualFinal(item: PreviewItem, ov: OverrideData): number | null {
+    const rep = item.rep || {};
+    const vals: number[] = Array.isArray(rep.vals) ? rep.vals : [];
+    const selectedVals = ov.selecionados
+      .map((idx) => Number(vals[idx]))
+      .filter((v) => Number.isFinite(v));
+    if (!selectedVals.length) return null;
+    // Por padrão (manual): média simples dos selecionados
+    const mean = selectedVals.reduce((a, b) => a + b, 0) / selectedVals.length;
+    return mean;
+  }
+
+  const canGenerate = useMemo(() => {
+    if (!file) return false;
+    if (!preview.length) return false;
+    if (!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()) return false;
+    return true;
+  }, [file, preview, numeroLista, nomeLista, processoSEI, responsavel]);
 
   async function generateZip() {
     if (!file) {
@@ -447,69 +502,52 @@ export default function Page() {
       return;
     }
     if (!preview.length) {
-      setStatus("Gere a prévia antes de baixar os arquivos.");
+      setStatus("Gere a prévia antes de gerar o ZIP.");
       return;
     }
-
     if (!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()) {
-      setStatus("Preencha os campos obrigatórios: Número da Lista, Nome da Lista, Processo SEI e Responsável.");
+      setStatus("Preencha os campos obrigatórios (Lista/SEI/Responsável).");
       return;
     }
 
-    setStatus("Gerando arquivos finais...");
     setLoadingGenerate(true);
+    setStatus("Gerando ZIP...");
 
-    // Payload para o backend
-    const last_quotes: Record<string, number> = {};
-    for (const it of preview) {
-      const v = parseBRL(lastQuotes[it.item] || "");
-      if (v !== null) last_quotes[it.item] = v;
-    }
-
-    const manual_overrides: any = {};
-    for (const [itemId, ov] of Object.entries(overrides as Record<string, ManualOverride>)) {
-      manual_overrides[itemId] = {
-        included_indices: ov.includedIndices,
-        method: ov.method,
-        justificativa_codigo: ov.justificativaCodigo,
-        justificativa_texto: ov.justificativaTexto,
-      };
-    }
-
-    const payload = {
-      last_quotes,
-      manual_overrides,
-      lista_meta: {
+    try {
+      const payload = {
         numero_lista: numeroLista.trim(),
         nome_lista: nomeLista.trim(),
         processo_sei: processoSEI.trim(),
         responsavel: responsavel.trim(),
-      },
-    };
+        preview_items: preview,
+        overrides,
+        last_quotes: lastQuotes,
+      };
 
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("payload", JSON.stringify(payload));
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-      const res = await fetch("/api/generate", { method: "POST", body: form });
       if (!res.ok) {
         const msg = await res.text();
         setStatus(`Falha ao processar: ${msg}`);
         return;
       }
+
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
+
       const a = document.createElement("a");
       a.href = url;
-      const numeroSlug = safeSlug(numeroLista);
-      a.download = `Formacao_Precos_Referencia_Lista_${numeroSlug}.zip`;
+      a.download = `Formacao_Precos_Referencia_Lista_${safeSlug(numeroLista)}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
 
-      setStatus("Concluído! ZIP gerado com 2 PDFs.");
+      window.URL.revokeObjectURL(url);
+      setStatus("ZIP gerado.");
     } catch (e: any) {
       setStatus(`Falha ao gerar ZIP: ${String(e)}`);
     } finally {
@@ -517,191 +555,110 @@ export default function Page() {
     }
   }
 
-  const canGenerate =
-    !!file &&
-    preview.length > 0 &&
-    !loadingGenerate &&
-    !!numeroLista.trim() &&
-    !!nomeLista.trim() &&
-    !!processoSEI.trim() &&
-    !!responsavel.trim();
+  // === UX: botões em foco ===
+  const highlightChoose = !file;
+  const highlightPreview = !!file && !preview.length;
 
-  const tableRows = useMemo(() => {
-    return preview.map((it) => {
-      const last = parseBRL(lastQuotes[it.item] || "");
-      const calc = it.valor_calculado;
-      const ov = overrides[it.item];
+  function reqBorder(v: string): string {
+    return v.trim() ? "#9ca3af" : "#b91c1c";
+  }
+  function reqBg(v: string): string {
+    return v.trim() ? "#ffffff" : "#fef2f2";
+  }
 
-      const eligible = last !== null && last > 0 && calc !== null && calc <= 1.2 * last;
-      const allowManual = eligible || !!ov;
-
-      // Cores do botão quando elegível e ainda não ajustado:
-      // - Vermelho: último licitado > valor calculado (valor calculado ficou abaixo do histórico)
-      // - Amarelo: valor calculado está até 20% acima do último licitado (calc <= 1.2 * last)
-      // - Verde: já ajustado (override salvo)
-      let adjustColor: "red" | "yellow" | "none" | "green" = "none";
-      if (ov) {
-        adjustColor = "green";
-      } else if (eligible && last !== null && calc !== null) {
-        adjustColor = calc < last ? "red" : "yellow";
-      }
-
-      let modo = "Automático";
-      let metodo = "";
-      let valorFinal: number | null = calc;
-
-      if (ov) {
-        modo = "Manual";
-        metodo = ov.method === "media" ? "Média" : "Mediana";
-        const idxToVal = new Map<number, number>();
-        for (const e of it.valores_brutos) idxToVal.set(e.idx, e.valor);
-        const included = ov.includedIndices
-          .map((idx) => idxToVal.get(idx))
-          .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
-        valorFinal = ov.method === "media" ? mean(included) : median(included);
-      }
-
-      const diffAbs = last !== null && valorFinal !== null ? valorFinal - last : null;
-
-      return {
-        ...it,
-        last,
-        eligible,
-        allowManual,
-        adjustColor,
-        modo,
-        metodo,
-        valorFinal,
-        diffAbs,
-        hasOverride: !!ov,
-      };
-    });
-  }, [preview, lastQuotes, overrides]);
+  const pncpUltForModal = useMemo(() => {
+    const cat = pncpHistCatmat;
+    const it = preview.find((x) => String(x.catmat || "") === cat);
+    if (!it) return null;
+    return pncpUltimoByItem[it.item] || null;
+  }, [pncpHistCatmat, preview, pncpUltimoByItem]);
 
   return (
-    <main
-      style={{
-        margin: "12px -11px 0", // reduz margens laterais desta página (mais espaço para a tabela)
-        padding: "0 0 110px",
-      }}
-    >
-
+    <main style={{ margin: "12px 0 0", padding: "0 0 110px" }}>
+      {/* Header / orientação */}
       <div style={{ marginTop: 4, marginBottom: 10 }}>
-        <div style={{ fontSize: 18, fontWeight: 900, color: "#111827" }}>Formação de Preços de Referência</div>
-        <div style={{ marginTop: 4, fontSize: 13, color: "#4b5563" }}>
-          Geração de relatórios (PDF) com base na pesquisa do ComprasGOV
+        <div style={{ fontSize: 18, fontWeight: 900, color: "#111827" }}>
+          UPDE — Preços de Referência (Prévia + Ajuste Manual)
+        </div>
+        <div style={{ color: "#6b7280", marginTop: 4, fontSize: 13 }}>
+          1) Faça upload do PDF do ComprasGOV → 2) Veja a prévia → 3) Informe o último licitado → 4) Ajuste manual (liberado
+          quando Valor calculado ≤ 1,2× Último licitado) → 5) Gere o ZIP.
         </div>
       </div>
 
-
-      {/* Etapas */}
+      {/* Upload / ações principais */}
       <div
         style={{
-          marginTop: 12,
           display: "flex",
-          justifyContent: "space-between",
           gap: 12,
-          flexWrap: "wrap",
           alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          padding: "10px 12px",
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
         }}
       >
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          {[
-            { label: "1. Upload", done: !!file },
-            { label: "2. Prévia", done: preview.length > 0 },
-            { label: "3. Último licitado", done: preview.length > 0 },
-            { label: "4. Ajuste manual", done: Object.keys(overrides).length > 0 },
-            { label: "5. Gerar ZIP", done: false },
-          ].map((s) => (
-            <div
-              key={s.label}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: s.done ? "#ecfdf5" : "#f9fafb",
-                color: s.done ? "#065f46" : "#374151",
-                fontWeight: 700,
-                fontSize: 12,
-              }}
-            >
-              {s.label}
-            </div>
-          ))}
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            alignItems: "center",
-            flexWrap: "wrap",
-            justifyContent: "flex-end",
-            marginLeft: "auto",
-          }}
-        >
-          <input
-            id="pdfInput"
-            type="file"
-            accept="application/pdf"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            style={{ display: "none" }}
-          />
-
-          <label
-            htmlFor="pdfInput"
-            className={`btn ${focusChooseFile ? "btnCta" : "fileBtn"}`}
-            title="Escolher PDF"
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            className={`btn ${highlightChoose ? "btnCta" : "btnPrimary"}`}
+            onClick={() => fileInputRef.current?.click()}
           >
             Escolher arquivo
-          </label>
-
-          <span style={{ fontSize: 12, color: "#4b5563", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0] || null;
+              setFile(f);
+              setStatus("");
+              setPreview([]);
+              setPreviewReady(false);
+              setOverrides({});
+              setLastQuotes({});
+              setPncpUltimoByItem({});
+              setStepUploadDone(!!f);
+              setStepPreviewDone(false);
+            }}
+          />
+          <div style={{ color: "#374151", fontSize: 13 }}>
             {file ? file.name : "Nenhum arquivo escolhido"}
-          </span>
+          </div>
+        </div>
 
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <button
             onClick={loadPreview}
-            disabled={!file || loadingPreview || previewReady}
-            className={`btn ${focusPreview ? "btnCta" : previewReady ? "btnGhost" : "btnPrimary"}`}
-            title={previewReady ? "Prévia já gerada (troque o arquivo para gerar novamente)" : "Gerar prévia"}
+            disabled={!file || loadingPreview || stepPreviewDone}
+            className={`btn ${highlightPreview ? "btnCta" : "btnPrimary"}`}
           >
-            {loadingPreview ? "Carregando..." : "Gerar prévia"}
+            {loadingPreview ? "Gerando..." : stepPreviewDone ? "Prévia gerada" : "Gerar prévia"}
           </button>
         </div>
       </div>
 
-      {status && (
-        <p
-          style={{ marginTop: 12 }}
-          dangerouslySetInnerHTML={{ __html: sanitizeStatusHtml(status) }}
-        />
-      )}
-
+      {/* Campos obrigatórios */}
       {preview.length > 0 && (
-        <div style={{ marginTop: 16, overflowX: "hidden" }}>
-          {/* Campos obrigatórios para o PDF comparativo */}
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              flexWrap: "wrap",
-              alignItems: "flex-end",
-              marginBottom: 12,
-              padding: "10px 12px",
-              border: "1px solid #ddd",
-              borderRadius: 8,
-              background: "#f0f0f0",
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <label style={{ fontWeight: 700 }}>
-                Número da Lista <span style={{ color: "#c62828" }}>*</span>
-              </label>
+        <div
+          style={{
+            marginTop: 12,
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            padding: "10px 12px",
+            background: "#f3f4f6",
+          }}
+        >
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ fontWeight: 900 }}>Dados do relatório</div>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginLeft: "auto" }}>
               <input
                 value={numeroLista}
                 onChange={(e) => setNumeroLista(e.target.value)}
-                placeholder="Ex: 123.26"
+                placeholder="Número da Lista"
                 style={{
                   width: 160,
                   fontSize: 14,
@@ -711,18 +668,12 @@ export default function Page() {
                   borderRadius: 6,
                 }}
               />
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 260 }}>
-              <label style={{ fontWeight: 700 }}>
-                Nome da Lista <span style={{ color: "#c62828" }}>*</span>
-              </label>
               <input
                 value={nomeLista}
                 onChange={(e) => setNomeLista(e.target.value)}
-                placeholder="Ex: Gerais Injetáveis"
+                placeholder="Nome da Lista"
                 style={{
-                  width: "100%",
+                  width: 260,
                   fontSize: 14,
                   padding: "6px 8px",
                   border: `1px solid ${reqBorder(nomeLista)}` as any,
@@ -730,18 +681,12 @@ export default function Page() {
                   borderRadius: 6,
                 }}
               />
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
-              <label style={{ fontWeight: 700 }}>
-                Processo SEI <span style={{ color: "#c62828" }}>*</span>
-              </label>
               <input
                 value={processoSEI}
                 onChange={(e) => setProcessoSEI(e.target.value)}
-                placeholder="Ex: 23123.000000/2026-00"
+                placeholder="Processo SEI"
                 style={{
-                  width: 220,
+                  width: 200,
                   fontSize: 14,
                   padding: "6px 8px",
                   border: `1px solid ${reqBorder(processoSEI)}` as any,
@@ -749,17 +694,10 @@ export default function Page() {
                   borderRadius: 6,
                 }}
               />
-            </div>
-
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
-              <label style={{ fontWeight: 700 }}>
-                Responsável <span style={{ color: "#c62828" }}>*</span>
-              </label>
               <input
                 value={responsavel}
                 onChange={(e) => setResponsavel(e.target.value)}
-                placeholder="Ex: Pedro"
+                placeholder="Responsável"
                 style={{
                   width: 220,
                   fontSize: 14,
@@ -770,13 +708,36 @@ export default function Page() {
                 }}
               />
             </div>
-{(!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()) && (
+            {(!numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()) && (
               <div style={{ color: "#c62828", fontWeight: 600, marginLeft: "auto" }}>
                 Preencha os campos obrigatórios para liberar o ZIP.
               </div>
             )}
           </div>
+        </div>
+      )}
 
+      {/* Status */}
+      {status && (
+        <pre
+          style={{
+            marginTop: 12,
+            background: "#f9fafb",
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            padding: 12,
+            whiteSpace: "pre-wrap",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+            fontSize: 12,
+          }}
+        >
+          {status}
+        </pre>
+      )}
+
+      {/* Tabela */}
+      {preview.length > 0 && (
+        <div style={{ marginTop: 12 }}>
           <table
             style={{
               borderCollapse: "collapse",
@@ -834,6 +795,9 @@ export default function Page() {
               {tableRows.map((r, rowIdx) => {
                 const isActive = activeLastQuoteRow === r.item;
                 const baseBg = rowIdx % 2 === 0 ? "#ffffff" : "#f4f4f4";
+                const dif = computeDif(r.item, r.valor_final);
+                const adj = getAdjustButtonState(r.item, r.valor_final);
+
                 return (
                   <tr
                     key={r.item}
@@ -844,168 +808,158 @@ export default function Page() {
                       transition: "background 120ms ease, box-shadow 120ms ease",
                     }}
                   >
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.item}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.catmat}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_bruto}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_final}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_altos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_baixos}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
-                    {fmtBRL(r.valor_calculado)}
-                  </td>
-                  <td style={{ border: "1px solid #ddd", padding: "6px 6px", textAlign: "center", minWidth: 170 }}>
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                      <input
-                        value={lastQuotes[r.item] || ""}
-                        onChange={(e) =>
-                          setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))
-                        }
-                        onFocus={() => setActiveLastQuoteRow(r.item)}
-                        onBlur={() =>
-                          setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))
-                        }
-                        placeholder="ex: 1.234,56"
-                        style={{
-                          width: 88,
-                          fontSize: 13,
-                          padding: "3px 6px",
-                          border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
-                          borderRadius: 6,
-                          outline: "none",
-                          background: isActive ? "#ffffff" : undefined,
-                        }}
-                      />
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.item}</td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.catmat}</td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_bruto}</td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.n_final}</td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_altos}</td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.excl_baixos}</td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                      {fmtBRL(r.valor_calculado)}
+                    </td>
 
-                      <div
-                        style={{
-                          width: 150,
-                          textAlign: "center",
-                          fontSize: 11,
-                          color: "#374151",
-                          lineHeight: "14px",
-                        }}
-                      >
-                        {(() => {
-                          const info = pncpUltimoByItem[r.item];
-                          if (pncpUltimoLoading) return "Consultando PNCP...";
-                          if (!info) return "";
+                    <td style={{ border: "1px solid #ddd", padding: "6px 6px", textAlign: "center", minWidth: 170 }}>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <input
+                          value={lastQuotes[r.item] || ""}
+                          onChange={(e) => setLastQuotes((prev) => ({ ...prev, [r.item]: e.target.value }))}
+                          onFocus={() => setActiveLastQuoteRow(r.item)}
+                          onBlur={() => setActiveLastQuoteRow((prev) => (prev === r.item ? null : prev))}
+                          placeholder="ex: 1.234,56"
+                          style={{
+                            width: 88,
+                            fontSize: 13,
+                            padding: "3px 6px",
+                            border: isActive ? "2px solid #1976d2" : "1px solid #ccc",
+                            borderRadius: 6,
+                            outline: "none",
+                            background: isActive ? "#ffffff" : undefined,
+                          }}
+                        />
 
-                          const pe = info.pregao ? `PE ${info.pregao}` : "";
-                          const d = info.data_resultado_br || "";
+                        <div
+                          style={{
+                            width: 150,
+                            maxWidth: 150,
+                            textAlign: "center",
+                            fontSize: 11,
+                            color: "#374151",
+                            lineHeight: "14px",
+                          }}
+                        >
+                          {(() => {
+                            const info = pncpUltimoByItem[r.item];
+                            if (pncpUltimoLoading) return "Consultando PNCP...";
+                            if (!info) return "";
 
-                          const line3 =
-                            info.status === "fracassado"
-                              ? "FRACASSADO"
-                              : info.nome_fornecedor ||
-                                (info.status === "nao_encontrado" ? "Sem registro" : "");
+                            const pe = (info as any).pregao ? `PE ${(info as any).pregao}` : "";
+                            const d = (info as any).data_resultado_br || "";
 
-                          return (
-                            <>
-                              {pe && <div>{pe}</div>}
-                              {d && <div>{d}</div>}
-                              {line3 && (
-                                <div
-                                  style={{
-                                    width: "100%",
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                  title={line3}
-                                >
-                                  {line3}
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
-                      </div>
+                            const line3 =
+                              (info as any).status === "fracassado"
+                                ? "FRACASSADO"
+                                : (info as any).nome_fornecedor ||
+                                  ((info as any).status === "nao_encontrado" ? "Sem registro" : "");
 
-                      <button
-                        type="button"
-                        className="btn btnGhost"
-                        onClick={() => openPncpHistorico(r.catmat)}
-                        style={{
-                          padding: "1px 10px",
-                          fontSize: 11,
-                          lineHeight: "18px",
-                          height: 22,
-                          borderRadius: 6,
-                          border: "1px solid #cbd5e1",
-                          background: "#ffffff",
-                          cursor: "pointer",
-                        }}
-                        title="Abrir histórico completo no PNCP"
-                      >
-                        Histórico
-                      </button>
-                    </div>
-                  </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.modo}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
-                    {fmtBRL(r.valorFinal)}
-                  </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
-                    {fmtBRL(r.diffAbs)}
-                  </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button
-                        onClick={() => openManualModal(r)}
-                        disabled={!r.allowManual}
-                        title={
-                          r.allowManual
-                            ? r.hasOverride
-                              ? "Ajuste manual já salvo (clique para revisar)"
-                              : "Ajustar manualmente"
-                            : "Só disponível quando Valor calculado ≤ 1,2× Último licitado"
-                        }
-                        className="btn"
-                        style={(() => {
-                          if (!r.allowManual) {
-                            return {
-                              cursor: "not-allowed",
-                              opacity: 0.6,
+                            const lineStyle: React.CSSProperties = {
+                              width: "100%",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
                             };
-                          }
-                          if (r.adjustColor === "green") {
-                            return {
-                              background: "#2e7d32",
-                              color: "white",
-                              border: "1px solid #1b5e20",
-                              fontWeight: 700,
-                              cursor: "pointer",
-                            };
-                          }
-                          if (r.adjustColor === "red") {
-                            return {
-                              background: "#c62828",
-                              color: "white",
-                              border: "1px solid #8e0000",
-                              fontWeight: 700,
-                              cursor: "pointer",
-                            };
-                          }
-                          // yellow
-                          return {
-                            background: "#f1c232",
-                            color: "#000",
-                            border: "1px solid #c9a100",
-                            fontWeight: 700,
-                            cursor: "pointer",
-                          };
-                        })()}
-                      >
-                        Ajustar
-                      </button>
-                      {r.hasOverride && (
-                        <button className="btn btnGhost" onClick={() => clearManualOverride(r.item)}>
-                          Limpar
+
+                            return (
+                              <>
+                                {pe && (
+                                  <div style={lineStyle} title={pe}>
+                                    {pe}
+                                  </div>
+                                )}
+                                {d && (
+                                  <div style={lineStyle} title={d}>
+                                    {d}
+                                  </div>
+                                )}
+                                {line3 && (
+                                  <div style={lineStyle} title={line3}>
+                                    {line3}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
+
+                        <button
+                          className="btn btnGhost"
+                          style={{ padding: "5px 10px", fontSize: 12, height: 28 }}
+                          onClick={() => openPncpHistorico(String(r.catmat || ""))}
+                          disabled={!r.catmat}
+                        >
+                          Histórico
                         </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
+                      </div>
+                    </td>
+
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>{r.modo}</td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                      {fmtBRL(r.valor_final)}
+                    </td>
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                      {dif === null ? "" : fmtBRL(dif)}
+                    </td>
+
+                    <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+                        <button
+                          onClick={() => openManualModal(r)}
+                          disabled={!adj.enabled}
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 10,
+                            border:
+                              adj.color === "green"
+                                ? "1px solid #1b5e20"
+                                : adj.color === "red"
+                                ? "1px solid #7f1d1d"
+                                : adj.color === "yellow"
+                                ? "1px solid #8a6a00"
+                                : "1px solid #d1d5db",
+                            fontWeight: 700,
+                            background:
+                              adj.color === "green"
+                                ? "#2e7d32"
+                                : adj.color === "red"
+                                ? "#c62828"
+                                : adj.color === "yellow"
+                                ? "#f1c232"
+                                : "#f3f4f6",
+                            color:
+                              adj.color === "yellow" ? "#111827" : adj.color === "disabled" ? "#6b7280" : "white",
+                            cursor: adj.enabled ? "pointer" : "not-allowed",
+                            minWidth: 92,
+                          }}
+                          title={
+                            adj.color === "red"
+                              ? "Último licitado > Valor final (ajuste recomendado)"
+                              : adj.color === "yellow"
+                              ? "Disponível quando Valor calculado ≤ 1,2× Último licitado"
+                              : adj.color === "green"
+                              ? "Ajustado manualmente"
+                              : "Só disponível quando Valor calculado ≤ 1,2× Último licitado"
+                          }
+                        >
+                          Ajustar
+                        </button>
+
+                        {overrides[r.item]?.modo === "Manual" && (
+                          <button className="btn btnGhost" onClick={() => clearManualOverride(r.item)}>
+                            Remover
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
@@ -1013,8 +967,8 @@ export default function Page() {
         </div>
       )}
 
-      {/* Modal */}
-      {modalItem && (
+      {/* Modal ajuste manual */}
+      {manualModal.open && (
         <div
           style={{
             position: "fixed",
@@ -1024,7 +978,7 @@ export default function Page() {
             alignItems: "center",
             justifyContent: "center",
             padding: 16,
-            zIndex: 50,
+            zIndex: 60,
           }}
           onClick={(e) => {
             if (e.target === e.currentTarget) closeModal();
@@ -1032,7 +986,7 @@ export default function Page() {
         >
           <div
             style={{
-              width: "min(900px, 100%)",
+              width: "min(1100px, 100%)",
               background: "white",
               borderRadius: 8,
               padding: 16,
@@ -1040,168 +994,218 @@ export default function Page() {
               overflowY: "auto",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
               <div>
-                <h2 style={{ margin: 0 }}>Ajuste manual — {modalItem.item}</h2>
-                <p style={{ margin: "6px 0 0" }}>
-                  Selecione os valores que devem compor o cálculo. Os indicadores (média/mediana/CV)
-                  são recalculados em tempo real.
-                </p>
+                <h2 style={{ margin: 0 }}>Ajuste manual — {manualModal.itemId}</h2>
+                <div style={{ marginTop: 6, color: "#6b7280", fontSize: 13 }}>
+                  Selecione os valores que devem compor a estimativa e justifique a análise manual.
+                </div>
               </div>
-              <button onClick={closeModal}>Fechar</button>
+              <button className="btn btnGhost" onClick={closeModal}>
+                Fechar
+              </button>
             </div>
 
-            <div style={{ marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 320 }}>
-                <h3 style={{ margin: "10px 0" }}>Valores brutos</h3>
-                <div style={{ border: "1px solid #eee", borderRadius: 6 }}>
-                  {modalSortedEntries.map((e, rowIdx) => (
-                    <label
-                      key={e.idx}
-                      style={{
-                        display: "flex",
-                        gap: 10,
-                        alignItems: "center",
-                        padding: "8px 10px",
-                        borderBottom:
-                          rowIdx === modalSortedEntries.length - 1 ? "none" : "1px solid #eee",
-                        background: modalAutoExclAltos.has(e.idx)
-                          ? "#fdecea"
-                          : modalAutoExclBaixos.has(e.idx)
-                          ? "#fff7cc"
-                          : undefined,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={modalSelected.includes(e.idx)}
-                        onChange={() => toggleModalIndex(e.idx)}
-                      />
-                      <span style={{ width: 60, opacity: 0.7 }}>[{rowIdx + 1}]</span>
-                      <span style={{ width: 110, fontFamily: "monospace" }}>{fmtSmart(e.valor)}</span>
-                      <span style={{ flex: 1, opacity: 0.85 }}>Fonte: {e.fonte || "-"}</span>
-                    </label>
-                  ))}
-                </div>
+            {/* Último licitado dentro do modal */}
+            <div
+              style={{
+                marginTop: 12,
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
+                flexWrap: "wrap",
+                padding: 10,
+                border: "1px solid #e5e7eb",
+                borderRadius: 10,
+                background: "#f9fafb",
+              }}
+            >
+              <div style={{ color: "#374151", fontSize: 13 }}>
+                <strong>Último licitado (digitado):</strong>{" "}
+                {lastQuotes[manualModal.itemId] ? `R$ ${lastQuotes[manualModal.itemId]}` : "—"}
               </div>
 
-              <div style={{ flex: 1, minWidth: 320 }}>
-                <h3 style={{ margin: "10px 0" }}>Cálculo (dinâmico)</h3>
+              {(() => {
+                const stats = computeStatsFromSelected(manualModal.entries, manualModal.selected);
+                const valorFinal = stats.mean;
+                return (
+                  <div style={{ color: "#111827", fontSize: 13 }}>
+                    <strong>Valor estimado (dinâmico):</strong>{" "}
+                    {valorFinal === null ? "—" : `R$ ${fmtSmart(valorFinal)}`}
+                  </div>
+                );
+              })()}
+            </div>
 
-                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>Qtd. incluída</div>
-                    <div>{modalSelected.length}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>Qtd. excluída</div>
-                    <div>{Math.max(0, modalItem.valores_brutos.length - modalSelected.length)}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>Média</div>
-                    <div style={{ fontFamily: "monospace" }}>{fmtSmart(modalStats.mean)}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>Mediana</div>
-                    <div style={{ fontFamily: "monospace" }}>{fmtSmart(modalStats.median)}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>CV</div>
-                    <div>{pct2(modalStats.cv)}</div>
-                  </div>
-                </div>
+            {/* Lista de valores brutos */}
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 900, marginBottom: 8 }}>Valores brutos (ordem crescente)</div>
 
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ fontWeight: 700 }}>Método final</div>
-                  <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
-                    <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input
-                        type="radio"
-                        name="method"
-                        checked={modalMethod === "media"}
-                        onChange={() => setModalMethod("media")}
-                      />
-                      Média
-                    </label>
-                    <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input
-                        type="radio"
-                        name="method"
-                        checked={modalMethod === "mediana"}
-                        onChange={() => setModalMethod("mediana")}
-                      />
-                      Mediana
-                    </label>
-                    <span style={{ opacity: 0.7 }}>
-                      Sugestão pelo CV: <strong>{modalStats.suggested === "media" ? "Média" : "Mediana"}</strong>
-                    </span>
-                  </div>
-                </div>
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#f7f7f7" }}>
+                      {["#", "Selecionar", "Valor (R$)", "Fonte"].map((h) => (
+                        <th
+                          key={h}
+                          style={{
+                            borderBottom: "1px solid #e5e7eb",
+                            padding: "10px 10px",
+                            textAlign: "center",
+                            whiteSpace: "nowrap",
+                            fontWeight: 800,
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {manualModal.entries.map((e, i) => {
+                      const isKept = manualModal.autoKept.has(e.idx);
+                      const isExAltos = manualModal.autoExclAltos.has(e.idx);
+                      const isExBaixos = manualModal.autoExclBaixos.has(e.idx);
 
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 700 }}>Valor estimado</div>
-                      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
-                        {fmtSmart(modalStats.finalVal)}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontWeight: 700 }}>Último valor cotado</div>
-                      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
-                        {fmtSmart(parseBRL(lastQuotes[modalItem.item] || "") || null)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                      const bg = isExAltos ? "#fdecea" : isExBaixos ? "#fff7cc" : i % 2 === 0 ? "#fff" : "#f9fafb";
 
-                <div style={{ marginTop: 16 }}>
-                  <div style={{ fontWeight: 700 }}>Justificativa</div>
-                  <select
-                    value={modalJustCode}
-                    onChange={(e) => {
-                      const code = e.target.value;
-                      setModalJustCode(code);
-                      if (!code) {
-                        setModalJustText("");
-                      } else if (code === "OUTRO") {
-                        setModalJustText("");
-                      } else {
-                        setModalJustText(JUST_OPTIONS[code] || "");
-                      }
-                    }}
-                    style={{ marginTop: 6, width: "100%" }}
-                  >
-                    <option value="">(opcional) Selecione um motivo</option>
-                    <option value="PADRAO_1">Exclusão de cotações abaixo do último preço homologado</option>
-                    <option value="PADRAO_2">Exclusão (abaixo do último preço) por exclusividade de fornecedor</option>
-                    <option value="OUTRO">Outro</option>
-                  </select>
-                  <textarea
-                    value={modalJustText}
-                    onChange={(e) => setModalJustText(e.target.value)}
-                    placeholder="(opcional) Descreva a justificativa"
-                    disabled={!!modalJustCode && modalJustCode !== "OUTRO"}
-                    style={{ marginTop: 8, width: "100%", minHeight: 90 }}
-                  />
-                </div>
-
-                <div style={{ display: "flex", gap: 12, marginTop: 16, justifyContent: "flex-end" }}>
-                  <button className="btn btnGhost" onClick={closeModal}>
-                    Cancelar
-                  </button>
-                  <button className="btn btnPrimary" onClick={saveManualOverride}>
-                    Salvar ajuste
-                  </button>
-                </div>
+                      return (
+                        <tr key={e.idx} style={{ background: bg }}>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>{i + 1}</td>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                            <input
+                              type="checkbox"
+                              checked={manualModal.selected.has(e.idx)}
+                              onChange={() => toggleSelect(e.idx)}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                            {fmtSmart(e.valor)}
+                          </td>
+                          <td style={{ padding: "8px 10px" }}>
+                            {e.fonte ? String(e.fonte) : isKept ? "—" : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
+
+              {/* Estatísticas dinâmicas */}
+              <div
+                style={{
+                  marginTop: 12,
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 10,
+                  padding: 12,
+                  background: "#f9fafb",
+                }}
+              >
+                {(() => {
+                  const stats = computeStatsFromSelected(manualModal.entries, manualModal.selected);
+
+                  return (
+                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontWeight: 800 }}>Número de valores selecionados</div>
+                        <div style={{ fontFamily: "monospace" }}>{stats.n}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 800 }}>Média (inclusão manual)</div>
+                        <div style={{ fontFamily: "monospace" }}>
+                          {stats.mean === null ? "—" : fmtSmart(stats.mean)}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 800 }}>Mediana (inclusão manual)</div>
+                        <div style={{ fontFamily: "monospace" }}>
+                          {stats.median === null ? "—" : fmtSmart(stats.median)}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 800 }}>Coeficiente de Variação (inclusão manual)</div>
+                        <div style={{ fontFamily: "monospace" }}>
+                          {stats.cv === null ? "—" : `${(stats.cv * 100).toFixed(2)}%`}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 800 }}>Valor Final (inclusão manual)</div>
+                        <div style={{ fontFamily: "monospace" }}>
+                          {stats.mean === null ? "—" : fmtSmart(stats.mean)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+
+            {/* Justificativa */}
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 900, marginBottom: 8 }}>Justificativa de análise manual</div>
+
+              <select
+                value={manualModal.justificativaSelected}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setManualModal((prev) => ({
+                    ...prev,
+                    justificativaSelected: v,
+                    justificativaOutro: v === "OUTRO" ? prev.justificativaOutro : "",
+                  }));
+                }}
+                style={{
+                  width: "100%",
+                  padding: "10px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #d1d5db",
+                  fontSize: 14,
+                  background: "white",
+                }}
+              >
+                <option value="">Selecione...</option>
+                <option value="Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM para evitar a fixação de preço estimado potencialmente inexequível sob risco de fracasso do certame.">
+                  Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM para evitar a fixação de preço estimado potencialmente inexequível sob risco de fracasso do certame.
+                </option>
+                <option value="Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM e discrepante da cotação do produto, cuja comercialização é exclusiva de fornecedor específico.">
+                  Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM e discrepante da cotação do produto, cuja comercialização é exclusiva de fornecedor específico.
+                </option>
+                <option value="OUTRO">Outro</option>
+              </select>
+
+              {manualModal.justificativaSelected === "OUTRO" && (
+                <textarea
+                  value={manualModal.justificativaOutro}
+                  onChange={(e) => setManualModal((prev) => ({ ...prev, justificativaOutro: e.target.value }))}
+                  placeholder="Digite a justificativa..."
+                  style={{
+                    width: "100%",
+                    minHeight: 90,
+                    marginTop: 10,
+                    padding: "10px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #d1d5db",
+                    fontSize: 14,
+                    resize: "vertical",
+                  }}
+                />
+              )}
+            </div>
+
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button className="btn btnGhost" onClick={closeModal}>
+                Cancelar
+              </button>
+              <button className="btn btnPrimary" onClick={saveManualOverride}>
+                Salvar ajuste
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Modal: histórico PNCP */}
+      {/* Modal Histórico PNCP */}
       {pncpHistOpen && (
         <div
           style={{
@@ -1234,14 +1238,14 @@ export default function Page() {
                 {pncpUltForModal && (
                   <div style={{ marginTop: 6, color: "#374151", fontSize: 13, lineHeight: 1.35 }}>
                     <strong>Último registro:</strong>{" "}
-                    {pncpUltForModal.status === "ok"
-                      ? `R$ ${fmtSmart(pncpUltForModal.valor_unitario_resultado_num)}`
-                      : pncpUltForModal.status === "fracassado"
+                    {(pncpUltForModal as any).status === "ok"
+                      ? `R$ ${fmtSmart((pncpUltForModal as any).valor_unitario_resultado_num)}`
+                      : (pncpUltForModal as any).status === "fracassado"
                       ? "Fracassado"
                       : "Sem registro"}
-                    {pncpUltForModal.pregao ? ` | Pregão ${pncpUltForModal.pregao}` : ""}
-                    {pncpUltForModal.nome_fornecedor ? ` | ${pncpUltForModal.nome_fornecedor}` : ""}
-                    {pncpUltForModal.data_resultado_br ? ` | ${pncpUltForModal.data_resultado_br}` : ""}
+                    {(pncpUltForModal as any).pregao ? ` | Pregão ${(pncpUltForModal as any).pregao}` : ""}
+                    {(pncpUltForModal as any).nome_fornecedor ? ` | ${(pncpUltForModal as any).nome_fornecedor}` : ""}
+                    {(pncpUltForModal as any).data_resultado_br ? ` | ${(pncpUltForModal as any).data_resultado_br}` : ""}
                   </div>
                 )}
               </div>
@@ -1265,13 +1269,15 @@ export default function Page() {
                     <thead>
                       <tr style={{ background: "#f7f7f7" }}>
                         {[
+                          "Seq.",
                           "Data",
                           "Pregão",
-                          "Fornecedor",
+                          "Nº Item PE",
                           "Situação",
-                          "Vlr. estimado (R$)",
-                          "Vlr. licitado (R$)",
+                          "Fornecedor",
                           "Link",
+                          "Valor Estimado (R$)",
+                          "Valor Licitado (R$)",
                         ].map((h) => (
                           <th
                             key={h}
@@ -1290,27 +1296,29 @@ export default function Page() {
                     </thead>
                     <tbody>
                       {pncpHistRows.map((r, i) => (
-                        <tr key={`${r.id_compra_item || i}`} style={{ background: i % 2 === 0 ? "#ffffff" : "#f9fafb" }}>
+                        <tr key={`${r.seq}-${r.pregao}-${i}`} style={{ background: i % 2 === 0 ? "#ffffff" : "#f9fafb" }}>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>{r.seq ?? i + 1}</td>
                           <td style={{ padding: "8px 10px", textAlign: "center" }}>{r.data_resultado_br || "-"}</td>
                           <td style={{ padding: "8px 10px", textAlign: "center" }}>{r.pregao || "-"}</td>
-                          <td style={{ padding: "8px 10px" }}>{r.nome_fornecedor || "-"}</td>
-                          <td style={{ padding: "8px 10px" }}>{r.situacao_compra_item_nome || "-"}</td>
-                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
-                            {typeof r.valor_unitario_estimado_num === "number" ? fmtSmart(r.valor_unitario_estimado_num) : "-"}
-                          </td>
-                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
-                            {typeof r.valor_unitario_resultado_num === "number"
-                              ? fmtSmart(r.valor_unitario_resultado_num)
-                              : "Fracassado"}
-                          </td>
                           <td style={{ padding: "8px 10px", textAlign: "center" }}>
-                            {r.compra_link ? (
-                              <a href={r.compra_link} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
+                            {typeof r.numero_item_pncp === "number" ? r.numero_item_pncp : r.numero_item_pncp ?? "-"}
+                          </td>
+                          <td style={{ padding: "8px 10px" }}>{r.situacao || "-"}</td>
+                          <td style={{ padding: "8px 10px" }}>{r.fornecedor || "-"}</td>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                            {r.link ? (
+                              <a href={r.link} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
                                 Abrir
                               </a>
                             ) : (
                               "-"
                             )}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                            {typeof r.valor_estimado_num === "number" ? fmtSmart(r.valor_estimado_num) : "-"}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                            {typeof r.valor_licitado_num === "number" ? fmtSmart(r.valor_licitado_num) : "Fracassado"}
                           </td>
                         </tr>
                       ))}
@@ -1332,13 +1340,13 @@ export default function Page() {
           bottom: 0,
           background: "rgba(255,255,255,0.92)",
           borderTop: "1px solid #e5e7eb",
-          padding: "10px 16px",
+          padding: "10px 6px",
           backdropFilter: "blur(6px)",
         }}
       >
         <div
           style={{
-            maxWidth: 1200,
+            maxWidth: 1400,
             margin: "0 auto",
             display: "flex",
             gap: 10,
@@ -1362,9 +1370,19 @@ export default function Page() {
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <button
               onClick={generateZip}
-              disabled={!file || !preview.length || loadingGenerate || !numeroLista.trim() || !nomeLista.trim() || !processoSEI.trim() || !responsavel.trim()}
+              disabled={
+                !file ||
+                !preview.length ||
+                loadingGenerate ||
+                !numeroLista.trim() ||
+                !nomeLista.trim() ||
+                !processoSEI.trim() ||
+                !responsavel.trim()
+              }
               className={`btn ${canGenerate ? "btnCta" : "btnPrimary"}`}
-              title={!preview.length ? "Gere a prévia primeiro" : canGenerate ? "Baixar ZIP (PDFs)" : "Preencha os campos obrigatórios"}
+              title={
+                !preview.length ? "Gere a prévia primeiro" : canGenerate ? "Baixar ZIP (PDFs)" : "Preencha os campos obrigatórios"
+              }
             >
               {loadingGenerate ? "Gerando..." : canGenerate ? "Baixar ZIP (PDFs)" : "Gerar ZIP (PDFs)"}
             </button>
@@ -1372,30 +1390,30 @@ export default function Page() {
             {SHOW_DEBUG && (
               <button
                 onClick={async () => {
-                if (!file) {
-                  setStatus("Selecione um PDF primeiro.");
-                  return;
-                }
-                setStatus("Gerando debug...");
-                const form = new FormData();
-                form.append("file", file);
-                const res = await fetch("/api/debug", { method: "POST", body: form });
-                if (!res.ok) {
-                  const msg = await res.text();
-                  setStatus(`Falha ao gerar debug: ${msg}`);
-                  return;
-                }
-                const blob = await res.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = "debug_audit.txt";
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                window.URL.revokeObjectURL(url);
-                setStatus("Debug baixado.");
-              }}
+                  if (!file) {
+                    setStatus("Selecione um PDF primeiro.");
+                    return;
+                  }
+                  setStatus("Gerando debug...");
+                  const form = new FormData();
+                  form.append("file", file);
+                  const res = await fetch("/api/debug", { method: "POST", body: form });
+                  if (!res.ok) {
+                    const msg = await res.text();
+                    setStatus(`Falha ao gerar debug: ${msg}`);
+                    return;
+                  }
+                  const blob = await res.blob();
+                  const url = window.URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "debug_audit.txt";
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  window.URL.revokeObjectURL(url);
+                  setStatus("Debug baixado.");
+                }}
                 disabled={!file}
                 className="btn"
               >
@@ -1405,7 +1423,6 @@ export default function Page() {
           </div>
         </div>
       </div>
-
     </main>
   );
 }
