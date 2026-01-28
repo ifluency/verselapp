@@ -579,7 +579,12 @@ export default function Page() {
   }, [preview, lastQuotes, overrides]);
 
   return (
-    <main style={{ margin: "12px 0 0", padding: "0 0 110px" }}>
+    <main
+      style={{
+        margin: "12px -11px 0", // reduz margens laterais desta página (mais espaço para a tabela)
+        padding: "0 0 110px",
+      }}
+    >
 
       <div style={{ marginTop: 4, marginBottom: 10 }}>
         <div style={{ fontSize: 18, fontWeight: 900, color: "#111827" }}>Formação de Preços de Referência</div>
@@ -876,26 +881,30 @@ export default function Page() {
                           const info = pncpUltimoByItem[r.item];
                           if (pncpUltimoLoading) return "Consultando PNCP...";
                           if (!info) return "";
-                          const resTxt =
-                            info.status === "ok"
-                              ? `Últ. licitado: R$ ${fmtSmart(info.valor_unitario_resultado_num)}`
-                              : info.status === "fracassado"
-                              ? "Últ. licitado: Fracassado"
-                              : "Sem registro";
-                          const estTxt =
-                            typeof info.valor_unitario_estimado_num === "number"
-                              ? `Últ. estimado: R$ ${fmtSmart(info.valor_unitario_estimado_num)}`
-                              : "";
-                          const p = info.pregao ? `Pregão ${info.pregao}` : "";
-                          const forn = info.nome_fornecedor ? info.nome_fornecedor : "";
-                          const d = info.data_resultado_br ? `Data ${info.data_resultado_br}` : "";
-                          const line2 = [p, forn].filter(Boolean).join(" | ");
-                          const line3 = [d].filter(Boolean).join(" ");
+
+                          const pe = info.pregao ? `PE ${info.pregao}` : "";
+                          const d = info.data_resultado_br || "";
+                          const line3 =
+                            info.status === "fracassado"
+                              ? "FRACASSADO"
+                              : info.nome_fornecedor || (info.status === "nao_encontrado" ? "Sem registro" : "");
+
                           return (
                             <>
-                              <div>{[resTxt, estTxt].filter(Boolean).join(" | ")}</div>
-                              {line2 && <div>{line2}</div>}
-                              {line3 && <div>{line3}</div>}
+                              {pe && <div>{pe}</div>}
+                              {d && <div>{d}</div>}
+                              {line3 && (
+                                <div
+                                  style={{
+                                    maxWidth: 150,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {line3}
+                                </div>
+                              )}
                             </>
                           );
                         })()}
@@ -906,9 +915,10 @@ export default function Page() {
                         className="btn btnGhost"
                         onClick={() => openPncpHistorico(r.catmat)}
                         style={{
-                          padding: "4px 8px",
-                          fontSize: 12,
-                          borderRadius: 8,
+                          padding: "2px 8px",
+                          fontSize: 11,
+                          lineHeight: 1.1,
+                          borderRadius: 6,
                           border: "1px solid #cbd5e1",
                           background: "#ffffff",
                           cursor: "pointer",
