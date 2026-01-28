@@ -90,23 +90,21 @@ def _upload_archive_to_r2(archive_bytes: bytes, lista_meta: dict):
     responsavel = str(lista_meta.get("responsavel") or "").strip()
     ts = _utc_now()
 
+    # Nome legível (usado no manifest/DB/UI). Não colocar em metadata do S3/R2,
+    # pois headers x-amz-meta exigem ASCII e nomes com acentos podem falhar.
     display_name = f"{numero} - {responsavel} - Pesquisa de Preços - {ts.strftime('%Y-%m-%d %H%M')}.zip".strip()
     numero_slug = _safe_slug(numero)
     year = ts.strftime("%Y")
     r2_key = f"{prefix}/{year}/{numero_slug}/{run_id}/archive.zip"
 
     try:
+        # Evitar Metadata com caracteres não ASCII (pode quebrar o upload).
+        # Toda a auditoria está no manifest.json e no banco (lista_runs).
         s3.put_object(
             Bucket=bucket,
             Key=r2_key,
             Body=archive_bytes,
             ContentType="application/zip",
-            Metadata={
-                "display_name": display_name[:2000],
-                "numero_lista": numero[:2000],
-                "responsavel": responsavel[:2000],
-                "run_id": run_id,
-            },
         )
         presigned = s3.generate_presigned_url(
             "get_object",
@@ -331,6 +329,9 @@ class handler(BaseHTTPRequestHandler):
                     )
                     if db_err:
                         print("WARN persist Neon:", db_err)
+                elif archive_err:
+                    # Log explícito para facilitar diagnóstico no Vercel.
+                    print("WARN R2 archive upload failed:", archive_err)
 
             # Resposta: ZIP para download + headers com auditoria
             filename = f"Formacao_Precos_Referencia_Lista_{numero}.zip"
@@ -344,7 +345,8 @@ class handler(BaseHTTPRequestHandler):
                 self.send_header("X-Archive-R2-Key", r2_key)
             if presigned_url:
                 self.send_header("X-Archive-Url", presigned_url)
-            if archive_err and debug_mode:
+            # Expor um aviso curto em header (sem stacktrace) para facilitar suporte.
+            if archive_err:
                 self.send_header("X-Archive-Warn", _safe_slug(archive_err)[:180])
 
             self.send_header("Content-Length", str(len(zip_bytes)))
