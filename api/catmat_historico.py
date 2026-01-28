@@ -10,6 +10,15 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 
+def _json_default(o):
+    # Evita erro: Decimal não é serializável em JSON
+    if isinstance(o, Decimal):
+        return float(o)
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    return str(o)
+
+
 def _as_date(v):
     if v is None:
         return None
@@ -220,7 +229,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _send_json(self, status, payload):
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        data = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
