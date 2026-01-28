@@ -51,9 +51,7 @@ def _ensure_schema(cur):
             numero_lista TEXT UNIQUE NOT NULL,
             nome_lista TEXT,
             responsavel TEXT,
-            processo_sei TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            processo_sei TEXT
         );
         """
     )
@@ -63,7 +61,6 @@ def _ensure_schema(cur):
             id BIGSERIAL PRIMARY KEY,
             lista_id BIGINT REFERENCES listas(id) ON DELETE CASCADE,
             run_id UUID UNIQUE NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             r2_key_archive TEXT,
             r2_key_input_pdf TEXT,
             archive_size_bytes BIGINT,
@@ -72,6 +69,9 @@ def _ensure_schema(cur):
         );
         """
     )
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_lista_runs_lista_id_created ON lista_runs (lista_id, created_at DESC);")
 
 
