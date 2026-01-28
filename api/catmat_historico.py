@@ -2,6 +2,7 @@ import os
 import json
 import traceback
 from datetime import datetime, date
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -67,6 +68,23 @@ def _to_float(x):
         return None
 
 
+def _to_int(x):
+    try:
+        if x is None:
+            return None
+        # Decimal/float/str -> int (quando aplicável)
+        return int(x)
+    except Exception:
+        return None
+
+
+def _jsonable(v):
+    """Converte tipos não serializáveis (ex.: Decimal) para tipos JSON-friendly."""
+    if isinstance(v, Decimal):
+        return float(v)
+    return v
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         q = parse_qs(urlparse(self.path).query)
@@ -74,6 +92,7 @@ class handler(BaseHTTPRequestHandler):
 
         catmat = (q.get("catmat", [""])[0] or "").strip()
 
+        # Resposta de uso se não vier catmat (útil para debug)
         if not catmat:
             payload = {
                 "error": "Parâmetro 'catmat' é obrigatório.",
@@ -98,38 +117,33 @@ class handler(BaseHTTPRequestHandler):
             conn = psycopg2.connect(dsn, sslmode="require")
             try:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    # Consultamos direto a tabela para garantir nome_fornecedor/situacao etc.
                     cur.execute(
                         """
                         SELECT
-                          i.cod_item_catalogo::text AS catmat,
-                          i.descricao_resumida,
-                          i.material_ou_servico,
-                          i.unidade_medida,
-                          i.id_compra::text AS id_compra,
-                          i.id_compra_item::text AS id_compra_item,
-                          i.numero_item_pncp,
-                          i.numero_controle_pncp_compra,
-                          c.codigo_modalidade,
-                          c.data_publicacao_pncp,
-                          i.data_resultado,
-                          i.quantidade,
-                          i.valor_unitario_estimado,
-                          i.valor_unitario_resultado,
-                          i.nome_fornecedor,
-                          i.situacao_compra_item_nome,
-                          i.data_atualizacao_pncp,
-                          i.data_inclusao_pncp
-                        FROM contratacao_item_pncp_14133 i
-                        LEFT JOIN contratacao_pncp_14133 c
-                          ON c.id_compra = i.id_compra
-                        WHERE i.cod_item_catalogo IS NOT NULL
-                          AND i.cod_item_catalogo::text = %s
-                        ORDER BY i.data_resultado DESC NULLS LAST,
-                                 i.data_atualizacao_pncp DESC NULLS LAST,
-                                 i.data_inclusao_pncp DESC NULLS LAST,
-                                 i.id_compra DESC,
-                                 i.id_compra_item DESC
+                          cod_item_catalogo::text AS catmat,
+                          descricao_resumida,
+                          material_ou_servico,
+                          unidade_medida,
+                          id_compra::text AS id_compra,
+                          id_compra_item::text AS id_compra_item,
+                          numero_controle_pncp_compra,
+                          codigo_modalidade,
+                          data_publicacao_pncp,
+                          data_resultado,
+                          quantidade,
+                          valor_unitario_estimado,
+                          valor_unitario_resultado,
+                          nome_fornecedor,
+                          situacao_compra_item_nome,
+                          data_atualizacao_pncp,
+                          data_inclusao_pncp
+                        FROM vw_catmat_preco_historico
+                        WHERE cod_item_catalogo::text = %s
+                        ORDER BY data_resultado DESC NULLS LAST,
+                                 data_atualizacao_pncp DESC NULLS LAST,
+                                 data_inclusao_pncp DESC NULLS LAST,
+                                 id_compra DESC,
+                                 id_compra_item DESC
                         """,
                         (catmat,),
                     )
@@ -153,15 +167,14 @@ class handler(BaseHTTPRequestHandler):
                         "unidade_medida": str(r.get("unidade_medida") or "").strip(),
                         "id_compra": id_compra,
                         "id_compra_item": str(r.get("id_compra_item") or "").strip(),
-                        "numero_item_pncp": r.get("numero_item_pncp"),
                         "numero_controle_pncp_compra": str(r.get("numero_controle_pncp_compra") or "").strip(),
-                        "codigo_modalidade": r.get("codigo_modalidade"),
+                        "codigo_modalidade": _to_int(r.get("codigo_modalidade")),
                         "data_publicacao_pncp_iso": d_pub.isoformat() if d_pub else None,
                         "data_publicacao_pncp_br": _fmt_date_br(d_pub),
                         "data_resultado_iso": d_res.isoformat() if d_res else None,
                         "data_resultado_br": _fmt_date_br(d_res),
                         "pregao": _pregao_from_id_compra(id_compra),
-                        "quantidade": r.get("quantidade"),
+                        "quantidade": _jsonable(r.get("quantidade")),
                         "valor_unitario_estimado_num": v_est,
                         "valor_unitario_resultado_num": v_res,
                         "resultado_status": "ok" if v_res is not None else "fracassado",
@@ -179,7 +192,10 @@ class handler(BaseHTTPRequestHandler):
             print(tb)
             if debug_mode:
                 return self._send_text(500, f"Erro ao consultar:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
-            return self._send_text(500, f"Falha ao consultar histórico PNCP: {str(e)}")
+            return self._send_text(
+                500,
+                f"Falha ao consultar histórico PNCP: {str(e)}",
+            )
 
     def do_POST(self):
         return self._send_text(405, "Use GET com ?catmat=XXXXXX")
