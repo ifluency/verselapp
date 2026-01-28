@@ -127,6 +127,7 @@ const LAST_LIC_LINE_STYLE: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+  textAlign: "center",
 };
 
 
