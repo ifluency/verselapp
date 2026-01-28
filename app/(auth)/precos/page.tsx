@@ -801,10 +801,10 @@ export default function Page() {
               <col style={{ width: "8%" }} />
               <col style={{ width: "9%" }} />
               <col style={{ width: "10%" }} />
-              <col style={{ width: "14%" }} />
+              <col style={{ width: "10%" }} />
               <col style={{ width: "7%" }} />
               <col style={{ width: "10%" }} />
-              <col style={{ width: "5%" }} />
+              <col style={{ width: "9%" }} />
               <col style={{ width: "7%" }} />
             </colgroup>
             <thead>
@@ -912,15 +912,7 @@ export default function Page() {
                               {pe && <div style={LAST_LIC_LINE_STYLE} title={pe}>{pe}</div>}
                               {d && <div style={LAST_LIC_LINE_STYLE} title={d}>{d}</div>}
                               {line3 && (
-                                <div
-                                  style={{
-                                    width: "100%",
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                  title={line3}
-                                >
+                                <div style={LAST_LIC_LINE_STYLE} title={line3}>
                                   {line3}
                                 </div>
                               )}
@@ -1303,10 +1295,10 @@ export default function Page() {
                           <td style={{ padding: "8px 10px", textAlign: "center" }}>{r.pregao || "-"}</td>
                           <td style={{ padding: "8px 10px" }}>{r.nome_fornecedor || "-"}</td>
                           <td style={{ padding: "8px 10px" }}>{r.situacao_compra_item_nome || "-"}</td>
-                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                          <td style={{ padding: "8px 10px", textAlign: "center", fontFamily: "monospace" }}>
                             {typeof r.valor_unitario_estimado_num === "number" ? fmtSmart(r.valor_unitario_estimado_num) : "-"}
                           </td>
-                          <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "monospace" }}>
+                          <td style={{ padding: "8px 10px", textAlign: "center", fontFamily: "monospace" }}>
                             {typeof r.valor_unitario_resultado_num === "number"
                               ? fmtSmart(r.valor_unitario_resultado_num)
                               : "Fracassado"}
