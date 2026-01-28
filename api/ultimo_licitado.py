@@ -2,6 +2,7 @@ import os
 import json
 import traceback
 from datetime import datetime, date
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -61,8 +62,24 @@ def _compra_link(id_compra: str | None) -> str:
 
 
 def _to_float(x):
+    """Converte números do banco (Decimal/float/int) e também strings PT-BR (ex: 'R$ 1.234,5600')."""
+    if x is None:
+        return None
+    if isinstance(x, Decimal):
+        return float(x)
+    if isinstance(x, str):
+        s = x.strip()
+        if not s:
+            return None
+        s = s.replace("R$", "").replace(" ", "")
+        # remove separador de milhar e troca vírgula por ponto
+        s = s.replace(".", "").replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
     try:
-        return float(x) if x is not None else None
+        return float(x)
     except Exception:
         return None
 
@@ -77,131 +94,4 @@ def _pick(d: dict, *keys, default=""):
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         q = parse_qs(urlparse(self.path).query)
-        debug_mode = q.get("debug", ["0"])[0] in ("1", "true", "True", "yes", "sim")
-
-        try:
-            length = int(self.headers.get("content-length", "0") or "0")
-            raw = self.rfile.read(length) if length > 0 else b"{}"
-
-            try:
-                payload = json.loads(raw.decode("utf-8") or "{}")
-            except Exception:
-                payload = {}
-
-            catmats_in = payload.get("catmats") or []
-            if not isinstance(catmats_in, list):
-                return self._send_json(400, {"error": "Campo 'catmats' deve ser uma lista."})
-
-            catmats = []
-            for c in catmats_in:
-                s = str(c).strip()
-                if s.isdigit():
-                    catmats.append(s)
-            catmats = list(dict.fromkeys(catmats))
-
-            if not catmats:
-                return self._send_json(200, {"by_catmat": {}, "count": 0})
-
-            dsn = os.environ.get("DATABASE_URL", "").strip()
-            if not dsn:
-                return self._send_json(500, {"error": "DATABASE_URL não configurada no ambiente."})
-
-            conn = psycopg2.connect(dsn, sslmode="require")
-            try:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    # usa row_to_json(i) para não quebrar se algum campo “extra” variar
-                    cur.execute(
-                        """
-                        SELECT DISTINCT ON (i.cod_item_catalogo)
-                          i.cod_item_catalogo::text AS catmat,
-                          i.id_compra::text AS id_compra,
-                          i.data_resultado,
-                          i.valor_unitario_estimado,
-                          i.valor_unitario_resultado,
-                          row_to_json(i) AS item_json
-                        FROM contratacao_item_pncp_14133 i
-                        WHERE i.cod_item_catalogo IS NOT NULL
-                          AND i.cod_item_catalogo::text = ANY(%s)
-                          AND i.criterio_julgamento_id_pncp = 1
-                        ORDER BY i.cod_item_catalogo,
-                                 i.data_resultado DESC NULLS LAST,
-                                 i.data_atualizacao_pncp DESC NULLS LAST,
-                                 i.data_inclusao_pncp DESC NULLS LAST,
-                                 i.id_compra DESC,
-                                 i.id_compra_item DESC
-                        """,
-                        (catmats,),
-                    )
-                    rows = cur.fetchall() or []
-            finally:
-                conn.close()
-
-            by_catmat = {}
-            for c in catmats:
-                by_catmat[c] = {
-                    "catmat": c,
-                    "status": "nao_encontrado",
-                    "data_resultado_iso": None,
-                    "data_resultado_br": "",
-                    "id_compra": "",
-                    "pregao": "",
-                    "compra_link": "",
-                    "nome_fornecedor": "",
-                    "valor_unitario_estimado_num": None,
-                    "valor_unitario_resultado_num": None,
-                }
-
-            for r in rows:
-                c = str(r.get("catmat") or "").strip()
-                id_compra = str(r.get("id_compra") or "").strip()
-                d = _as_date(r.get("data_resultado"))
-
-                item_json = r.get("item_json") or {}
-                # tenta pegar em diferentes chaves (se houver variação)
-                fornecedor = str(_pick(item_json, "nome_fornecedor", "nomeFornecedor", default="") or "").strip()
-
-                v_est = _to_float(r.get("valor_unitario_estimado"))
-                v_res = _to_float(r.get("valor_unitario_resultado"))
-                status = "ok" if v_res is not None else "fracassado"
-
-                by_catmat[c] = {
-                    "catmat": c,
-                    "status": status,
-                    "data_resultado_iso": (d.isoformat() if d else None),
-                    "data_resultado_br": _fmt_date_br(d),
-                    "id_compra": id_compra,
-                    "pregao": _pregao_from_id_compra(id_compra),
-                    "compra_link": _compra_link(id_compra),
-                    "nome_fornecedor": fornecedor,
-                    "valor_unitario_estimado_num": v_est,
-                    "valor_unitario_resultado_num": v_res,
-                }
-
-            return self._send_json(200, {"by_catmat": by_catmat, "count": len(by_catmat)})
-
-        except Exception as e:
-            tb = traceback.format_exc()
-            print("ERROR /api/ultimo_licitado:", str(e))
-            print(tb)
-            if debug_mode:
-                return self._send_text(500, f"Erro ao consultar:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
-            return self._send_text(500, f"Falha ao consultar base PNCP: {str(e)}")
-
-    def do_GET(self):
-        return self._send_text(405, "Use POST com JSON: {\"catmats\": [\"455302\", ...]}")
-
-    def _send_text(self, status: int, msg: str):
-        data = (msg or "").encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _send_json(self, status: int, payload: dict):
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        debug_mode = q.get("debug", ["0"])[0] in ("1", "true", "True", "yes
