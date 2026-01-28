@@ -55,9 +55,7 @@ def _ensure_schema(cur):
             numero_lista TEXT UNIQUE NOT NULL,
             nome_lista TEXT,
             responsavel TEXT,
-            processo_sei TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            processo_sei TEXT
         );
         """
     )
@@ -67,7 +65,6 @@ def _ensure_schema(cur):
             id BIGSERIAL PRIMARY KEY,
             lista_id BIGINT REFERENCES listas(id) ON DELETE CASCADE,
             run_id UUID UNIQUE NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             r2_key_archive TEXT,
             r2_key_input_pdf TEXT,
             archive_size_bytes BIGINT,
@@ -76,6 +73,9 @@ def _ensure_schema(cur):
         );
         """
     )
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_lista_runs_lista_id_created ON lista_runs (lista_id, created_at DESC);")
 
 
@@ -107,7 +107,7 @@ class handler(BaseHTTPRequestHandler):
                         """
                         SELECT
                             r.run_id,
-                            r.created_at,
+                            r.created_at AS run_created_at,
                             r.r2_key_archive,
                             r.r2_key_input_pdf,
                             r.payload_json,
@@ -131,21 +131,18 @@ class handler(BaseHTTPRequestHandler):
                     r2_key_archive = (row.get("r2_key_archive") or "").strip()
                     r2_key_input = (row.get("r2_key_input_pdf") or "").strip()
 
-                    # Se não tiver input.pdf separado (runs antigos), extrai do archive.zip e salva no R2
+                    # If old run doesn't have input.pdf stored separately, extract from archive.zip and upload input.pdf
                     if not r2_key_input:
                         if not r2_key_archive:
                             return _send_json(self, 500, {"error": "Run não possui r2_key_archive nem r2_key_input_pdf"})
 
-                        # Baixar archive.zip do R2
                         bio = io.BytesIO()
                         s3.download_fileobj(bucket, r2_key_archive, bio)
                         bio.seek(0)
 
                         with zipfile.ZipFile(bio, "r") as zf:
-                            # tenta achar input.pdf
                             candidates = [n for n in zf.namelist() if n.lower().endswith("input.pdf")]
                             if not candidates:
-                                # fallback: primeiro PDF do zip
                                 pdfs = [n for n in zf.namelist() if n.lower().endswith(".pdf")]
                                 if not pdfs:
                                     return _send_json(self, 500, {"error": "archive.zip não contém PDFs"})
@@ -153,7 +150,6 @@ class handler(BaseHTTPRequestHandler):
                             input_name = candidates[0]
                             input_bytes = zf.read(input_name)
 
-                        # salva input.pdf ao lado do archive (mesmo prefixo do run)
                         base_prefix = r2_key_archive.rsplit("/", 1)[0]
                         r2_key_input = f"{base_prefix}/input.pdf"
 
@@ -164,31 +160,33 @@ class handler(BaseHTTPRequestHandler):
                             ContentType="application/pdf",
                         )
 
-                        # atualiza banco
                         cur.execute(
                             "UPDATE lista_runs SET r2_key_input_pdf = %s WHERE run_id = %s",
                             (r2_key_input, run_id),
                         )
 
-                    # presigned GET do input.pdf
                     input_url = s3.generate_presigned_url(
                         "get_object",
                         Params={"Bucket": bucket, "Key": r2_key_input},
                         ExpiresIn=int(os.environ.get("R2_PRESIGN_EXPIRES", "3600")),
                     )
 
-                    return _send_json(self, 200, {
-                        "run_id": str(row.get("run_id")),
-                        "numero_lista": row.get("numero_lista"),
-                        "nome_lista": row.get("nome_lista"),
-                        "responsavel": row.get("responsavel"),
-                        "processo_sei": row.get("processo_sei"),
-                        "salvo_em": str(row.get("salvo_em")),
-                        "ultima_edicao_em": str(row.get("ultima_edicao_em")),
-                        "created_at_run": str(row.get("created_at")),
-                        "input_presigned_url": input_url,
-                        "payload_json": row.get("payload_json") or {},
-                    })
+                    return _send_json(
+                        self,
+                        200,
+                        {
+                            "run_id": str(row.get("run_id")),
+                            "numero_lista": row.get("numero_lista"),
+                            "nome_lista": row.get("nome_lista"),
+                            "responsavel": row.get("responsavel"),
+                            "processo_sei": row.get("processo_sei"),
+                            "salvo_em": str(row.get("salvo_em")),
+                            "ultima_edicao_em": str(row.get("ultima_edicao_em")),
+                            "created_at_run": str(row.get("run_created_at")),
+                            "input_presigned_url": input_url,
+                            "payload_json": row.get("payload_json") or {},
+                        },
+                    )
 
         except Exception as e:
             return _send_json(self, 500, {"error": str(e), "trace": traceback.format_exc()})
