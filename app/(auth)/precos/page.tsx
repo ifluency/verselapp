@@ -122,6 +122,13 @@ const JUST_OPTIONS: Record<string, string> = {
     "Foi (Foram) excluída(s) a(s) cotação(ões) inferior(es) ao último preço homologado no HUSM e discrepante da cotação do produto, cuja comercialização é exclusiva de fornecedor específico.",
 };
 
+const LAST_LIC_LINE_STYLE: React.CSSProperties = {
+  width: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
 
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
@@ -901,8 +908,8 @@ export default function Page() {
 
                           return (
                             <>
-                              {pe && <div style={lineStyle} title={pe}>{pe}</div>}
-                              {d && <div style={lineStyle} title={d}>{d}</div>}
+                              {pe && <div style={LAST_LIC_LINE_STYLE} title={pe}>{pe}</div>}
+                              {d && <div style={LAST_LIC_LINE_STYLE} title={d}>{d}</div>}
                               {line3 && (
                                 <div
                                   style={{
