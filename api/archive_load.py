@@ -145,7 +145,7 @@ class handler(BaseHTTPRequestHandler):
                             # tenta achar input.pdf
                             candidates = [n for n in zf.namelist() if n.lower().endswith("input.pdf")]
                             if not candidates:
-                                # fallback: primeiro pdf do zip que não seja os PDFs finais
+                                # fallback: primeiro PDF do zip
                                 pdfs = [n for n in zf.namelist() if n.lower().endswith(".pdf")]
                                 if not pdfs:
                                     return _send_json(self, 500, {"error": "archive.zip não contém PDFs"})
@@ -154,7 +154,6 @@ class handler(BaseHTTPRequestHandler):
                             input_bytes = zf.read(input_name)
 
                         # salva input.pdf ao lado do archive (mesmo prefixo do run)
-                        # ex: .../archive.zip -> .../input.pdf
                         base_prefix = r2_key_archive.rsplit("/", 1)[0]
                         r2_key_input = f"{base_prefix}/input.pdf"
 
