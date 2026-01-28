@@ -9,15 +9,6 @@ from urllib.parse import urlparse, parse_qs
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-def _json_default(o):
-    # Evita erro "Object of type Decimal is not JSON serializable"
-    if isinstance(o, Decimal):
-        return float(o)
-    if isinstance(o, (datetime, date)):
-        return o.isoformat()
-    return str(o)
-
-
 
 def _as_date(v):
     if v is None:
@@ -64,19 +55,19 @@ def _item_link(id_compra, numero_item_pncp):
     s = str(id_compra).strip()
     if not s:
         return ""
+
     try:
         n = int(numero_item_pncp) if numero_item_pncp is not None else None
     except Exception:
         n = None
+
+    base = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra"
     if n is None:
-        return (
-            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
-            f"acompanhamento-compra?compra={s}"
-        )
-    return (
-        "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
-        f"acompanhamento-compra/item/-{n}?compra={s}"
-    )
+        return f"{base}?compra={s}"
+
+    # Formato solicitado: /item/{n}?compra={id_compra}
+    return f"{base}/item/{n}?compra={s}"
+
 
 
 def _to_float(x):
@@ -229,7 +220,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _send_json(self, status, payload):
-        data = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
