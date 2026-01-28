@@ -76,6 +76,18 @@ def _to_float(x):
         return None
     if isinstance(x, Decimal):
         return float(x)
+    # Suporte a valores em texto no padrão PT-BR (ex: "R$ 1.234,5600")
+    if isinstance(x, str):
+        s = x.strip()
+        if not s:
+            return None
+        s = s.replace("R$", "").replace(" ", "")
+        # remove separador de milhar e troca vírgula por ponto
+        s = s.replace(".", "").replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
     try:
         return float(x)
     except Exception:
