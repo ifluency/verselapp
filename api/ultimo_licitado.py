@@ -29,14 +29,6 @@ def _fmt_date_br(d: date | None) -> str:
 
 
 def _pregao_from_id_compra(id_compra: str | None) -> str:
-    """Deriva pregão a partir do id_compra.
-
-    Regra prática:
-      - Ano = últimos 4 dígitos
-      - Número = 5 dígitos antes do ano
-      - Se número começar com 9, remove o 9 e usa os 4 restantes
-      - Formata como XXX/AAAA (padding)
-    """
     if not id_compra:
         return ""
     s = str(id_compra).strip()
@@ -68,6 +60,20 @@ def _compra_link(id_compra: str | None) -> str:
     )
 
 
+def _to_float(x):
+    try:
+        return float(x) if x is not None else None
+    except Exception:
+        return None
+
+
+def _pick(d: dict, *keys, default=""):
+    for k in keys:
+        if k in d and d[k] is not None and str(d[k]).strip() != "":
+            return d[k]
+    return default
+
+
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         q = parse_qs(urlparse(self.path).query)
@@ -86,8 +92,7 @@ class handler(BaseHTTPRequestHandler):
             if not isinstance(catmats_in, list):
                 return self._send_json(400, {"error": "Campo 'catmats' deve ser uma lista."})
 
-            # Normaliza catmat: só dígitos
-            catmats: list[str] = []
+            catmats = []
             for c in catmats_in:
                 s = str(c).strip()
                 if s.isdigit():
@@ -104,7 +109,7 @@ class handler(BaseHTTPRequestHandler):
             conn = psycopg2.connect(dsn, sslmode="require")
             try:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    # Consultamos direto a tabela para garantir campos como nome_fornecedor/situacao.
+                    # usa row_to_json(i) para não quebrar se algum campo “extra” variar
                     cur.execute(
                         """
                         SELECT DISTINCT ON (i.cod_item_catalogo)
@@ -113,11 +118,11 @@ class handler(BaseHTTPRequestHandler):
                           i.data_resultado,
                           i.valor_unitario_estimado,
                           i.valor_unitario_resultado,
-                          i.nome_fornecedor,
-                          i.situacao_compra_item_nome
+                          row_to_json(i) AS item_json
                         FROM contratacao_item_pncp_14133 i
                         WHERE i.cod_item_catalogo IS NOT NULL
                           AND i.cod_item_catalogo::text = ANY(%s)
+                          AND i.criterio_julgamento_id_pncp = 1
                         ORDER BY i.cod_item_catalogo,
                                  i.data_resultado DESC NULLS LAST,
                                  i.data_atualizacao_pncp DESC NULLS LAST,
@@ -131,8 +136,7 @@ class handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
 
-            # Default: não encontrado
-            by_catmat: dict[str, dict] = {}
+            by_catmat = {}
             for c in catmats:
                 by_catmat[c] = {
                     "catmat": c,
@@ -152,17 +156,12 @@ class handler(BaseHTTPRequestHandler):
                 id_compra = str(r.get("id_compra") or "").strip()
                 d = _as_date(r.get("data_resultado"))
 
-                def _to_float(x):
-                    try:
-                        return float(x) if x is not None else None
-                    except Exception:
-                        return None
+                item_json = r.get("item_json") or {}
+                # tenta pegar em diferentes chaves (se houver variação)
+                fornecedor = str(_pick(item_json, "nome_fornecedor", "nomeFornecedor", default="") or "").strip()
 
                 v_est = _to_float(r.get("valor_unitario_estimado"))
                 v_res = _to_float(r.get("valor_unitario_resultado"))
-                forn = str(r.get("nome_fornecedor") or "").strip()
-                situ = str(r.get("situacao_compra_item_nome") or "").strip()
-
                 status = "ok" if v_res is not None else "fracassado"
 
                 by_catmat[c] = {
@@ -173,8 +172,7 @@ class handler(BaseHTTPRequestHandler):
                     "id_compra": id_compra,
                     "pregao": _pregao_from_id_compra(id_compra),
                     "compra_link": _compra_link(id_compra),
-                    "nome_fornecedor": forn,
-                    "situacao_compra_item_nome": situ,
+                    "nome_fornecedor": fornecedor,
                     "valor_unitario_estimado_num": v_est,
                     "valor_unitario_resultado_num": v_res,
                 }
@@ -190,7 +188,7 @@ class handler(BaseHTTPRequestHandler):
             return self._send_text(500, f"Falha ao consultar base PNCP: {str(e)}")
 
     def do_GET(self):
-        return self._send_text(405, "Use POST com JSON: {\"catmats\": [\"455302\", ...]} ")
+        return self._send_text(405, "Use POST com JSON: {\"catmats\": [\"455302\", ...]}")
 
     def _send_text(self, status: int, msg: str):
         data = (msg or "").encode("utf-8")
