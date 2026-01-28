@@ -23,13 +23,13 @@ def _as_date(v):
         return None
 
 
-def _fmt_date_br(d: date | None) -> str:
+def _fmt_date_br(d):
     if not d:
         return ""
     return d.strftime("%d/%m/%Y")
 
 
-def _pregao_from_id_compra(id_compra: str | None) -> str:
+def _pregao_from_id_compra(id_compra):
     if not id_compra:
         return ""
     s = str(id_compra).strip()
@@ -49,7 +49,7 @@ def _pregao_from_id_compra(id_compra: str | None) -> str:
         return ""
 
 
-def _item_link(id_compra: str | None, numero_item_pncp) -> str:
+def _item_link(id_compra, numero_item_pncp):
     if not id_compra:
         return ""
     s = str(id_compra).strip()
@@ -60,7 +60,6 @@ def _item_link(id_compra: str | None, numero_item_pncp) -> str:
     except Exception:
         n = None
     if n is None:
-        # fallback: link do pregão
         return (
             "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
             f"acompanhamento-compra?compra={s}"
@@ -76,13 +75,11 @@ def _to_float(x):
         return None
     if isinstance(x, Decimal):
         return float(x)
-    # Suporte a valores em texto no padrão PT-BR (ex: "R$ 1.234,5600")
     if isinstance(x, str):
         s = x.strip()
         if not s:
             return None
         s = s.replace("R$", "").replace(" ", "")
-        # remove separador de milhar e troca vírgula por ponto
         s = s.replace(".", "").replace(",", ".")
         try:
             return float(s)
@@ -94,11 +91,13 @@ def _to_float(x):
         return None
 
 
-def _pick(d: dict, *keys, default=""):
-    for k in keys:
-        if k in d and d[k] is not None and str(d[k]).strip() != "":
-            return d[k]
-    return default
+def _to_int(x):
+    if x is None:
+        return None
+    try:
+        return int(x)
+    except Exception:
+        return None
 
 
 class handler(BaseHTTPRequestHandler):
@@ -135,14 +134,24 @@ class handler(BaseHTTPRequestHandler):
                         """
                         SELECT
                           i.cod_item_catalogo::text AS catmat,
+                          COALESCE(i.descricao_resumida,'')::text AS descricao_resumida,
+                          COALESCE(i.material_ou_servico,'')::text AS material_ou_servico,
+                          COALESCE(i.unidade_medida,'')::text AS unidade_medida,
                           i.id_compra::text AS id_compra,
                           i.id_compra_item::text AS id_compra_item,
-                          i.numero_item_pncp,
+                          i.numero_controle_pncp_compra::text AS numero_controle_pncp_compra,
+                          c.codigo_modalidade,
                           i.data_resultado,
+                          i.numero_item_pncp,
+                          i.quantidade,
                           i.valor_unitario_estimado,
                           i.valor_unitario_resultado,
-                          row_to_json(i) AS item_json
+                          i.data_atualizacao_pncp,
+                          i.data_inclusao_pncp,
+                          COALESCE(i.nome_fornecedor,'')::text AS nome_fornecedor,
+                          COALESCE(i.situacao_compra_item_nome,'')::text AS situacao_compra_item_nome
                         FROM contratacao_item_pncp_14133 i
+                        LEFT JOIN contratacao_pncp_14133 c ON c.id_compra = i.id_compra
                         WHERE i.cod_item_catalogo IS NOT NULL
                           AND i.cod_item_catalogo::text = %s
                           AND i.criterio_julgamento_id_pncp = 1
@@ -159,36 +168,40 @@ class handler(BaseHTTPRequestHandler):
                 conn.close()
 
             out_rows = []
-            seq = 1
             for r in rows:
                 id_compra = str(r.get("id_compra") or "").strip()
-                num_item = r.get("numero_item_pncp")
                 d_res = _as_date(r.get("data_resultado"))
-
-                item_json = r.get("item_json") or {}
-                fornecedor = str(_pick(item_json, "nome_fornecedor", "nomeFornecedor", default="") or "").strip()
-                situacao = str(_pick(item_json, "situacao_compra_item_nome", "situacaoCompraItemNome", default="") or "").strip()
+                pregao = _pregao_from_id_compra(id_compra)
+                num_item = _to_int(r.get("numero_item_pncp"))
 
                 v_est = _to_float(r.get("valor_unitario_estimado"))
                 v_res = _to_float(r.get("valor_unitario_resultado"))
 
                 out_rows.append(
                     {
-                        "seq": seq,
+                        "catmat": str(r.get("catmat") or ""),
+                        "descricao_resumida": str(r.get("descricao_resumida") or ""),
+                        "material_ou_servico": str(r.get("material_ou_servico") or ""),
+                        "unidade_medida": str(r.get("unidade_medida") or ""),
+                        "id_compra": id_compra,
+                        "id_compra_item": str(r.get("id_compra_item") or ""),
+                        "numero_controle_pncp_compra": str(r.get("numero_controle_pncp_compra") or ""),
+                        "codigo_modalidade": r.get("codigo_modalidade"),
                         "data_resultado_iso": d_res.isoformat() if d_res else None,
                         "data_resultado_br": _fmt_date_br(d_res),
-                        "pregao": _pregao_from_id_compra(id_compra),
+                        "pregao": pregao,
                         "numero_item_pncp": num_item,
-                        "situacao": situacao,
-                        "fornecedor": fornecedor,
-                        "link": _item_link(id_compra, num_item),
-                        "valor_estimado_num": v_est,
-                        "valor_licitado_num": v_res,  # null => fracassado no front
+                        "quantidade": r.get("quantidade"),
+                        "nome_fornecedor": str(r.get("nome_fornecedor") or ""),
+                        "situacao_compra_item_nome": str(r.get("situacao_compra_item_nome") or ""),
+                        "compra_link": _item_link(id_compra, num_item),
+                        "valor_unitario_estimado_num": v_est,
+                        "valor_unitario_resultado_num": v_res,
+                        "resultado_status": "fracassado" if v_res is None else "ok",
                     }
                 )
-                seq += 1
 
-            return self._send_json(200, {"catmat": catmat, "rows": out_rows, "count": len(out_rows)})
+            return self._send_json(200, {"catmat": catmat, "rows": out_rows})
 
         except Exception as e:
             tb = traceback.format_exc()
@@ -198,10 +211,7 @@ class handler(BaseHTTPRequestHandler):
                 return self._send_text(500, f"Erro ao consultar:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
             return self._send_text(500, f"Falha ao consultar histórico PNCP: {str(e)}")
 
-    def do_POST(self):
-        return self._send_text(405, "Use GET com ?catmat=XXXXXX")
-
-    def _send_text(self, status: int, msg: str):
+    def _send_text(self, status, msg):
         data = (msg or "").encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -209,7 +219,7 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _send_json(self, status: int, payload: dict):
+    def _send_json(self, status, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
