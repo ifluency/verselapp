@@ -853,8 +853,8 @@ export default function Page() {
                   <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
                     {fmtBRL(r.valor_calculado)}
                   </td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px", textAlign: "center" }}>
-                    <div style={{ display: "grid", gap: 6, justifyItems: "center" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "6px 6px", textAlign: "center", minWidth: 170 }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                       <input
                         value={lastQuotes[r.item] || ""}
                         onChange={(e) =>
@@ -876,7 +876,15 @@ export default function Page() {
                         }}
                       />
 
-                      <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.2 }}>
+                      <div
+                        style={{
+                          width: 150,
+                          textAlign: "center",
+                          fontSize: 11,
+                          color: "#374151",
+                          lineHeight: "14px",
+                        }}
+                      >
                         {(() => {
                           const info = pncpUltimoByItem[r.item];
                           if (pncpUltimoLoading) return "Consultando PNCP...";
@@ -884,10 +892,12 @@ export default function Page() {
 
                           const pe = info.pregao ? `PE ${info.pregao}` : "";
                           const d = info.data_resultado_br || "";
+
                           const line3 =
                             info.status === "fracassado"
                               ? "FRACASSADO"
-                              : info.nome_fornecedor || (info.status === "nao_encontrado" ? "Sem registro" : "");
+                              : info.nome_fornecedor ||
+                                (info.status === "nao_encontrado" ? "Sem registro" : "");
 
                           return (
                             <>
@@ -896,11 +906,12 @@ export default function Page() {
                               {line3 && (
                                 <div
                                   style={{
-                                    maxWidth: 150,
+                                    width: "100%",
                                     overflow: "hidden",
                                     textOverflow: "ellipsis",
                                     whiteSpace: "nowrap",
                                   }}
+                                  title={line3}
                                 >
                                   {line3}
                                 </div>
@@ -915,9 +926,10 @@ export default function Page() {
                         className="btn btnGhost"
                         onClick={() => openPncpHistorico(r.catmat)}
                         style={{
-                          padding: "2px 8px",
+                          padding: "1px 10px",
                           fontSize: 11,
-                          lineHeight: 1.1,
+                          lineHeight: "18px",
+                          height: 22,
                           borderRadius: 6,
                           border: "1px solid #cbd5e1",
                           background: "#ffffff",
