@@ -184,6 +184,7 @@ export default function Page() {
 
   // Arquivamento (R2)
   const [archiveInfo, setArchiveInfo] = useState<{ runId: string; url: string; key: string } | null>(null);
+  const [archiveWarn, setArchiveWarn] = useState<string>("");
 
   // Modal state
   const [modalItemId, setModalItemId] = useState<string | null>(null);
@@ -471,6 +472,7 @@ export default function Page() {
 
     setStatus("Gerando arquivos finais...");
     setLoadingGenerate(true);
+    setArchiveWarn("");
 
     // Payload para o backend
     const last_quotes: Record<string, number> = {};
@@ -516,6 +518,8 @@ export default function Page() {
       const archiveRunId = res.headers.get("x-archive-run-id") || "";
       const archiveUrl = res.headers.get("x-archive-url") || "";
       const archiveKey = res.headers.get("x-archive-r2-key") || "";
+      const archiveWarnHeader = res.headers.get("x-archive-warn") || "";
+      if (archiveWarnHeader) setArchiveWarn(archiveWarnHeader);
       if (archiveRunId || archiveUrl || archiveKey) {
         setArchiveInfo({ runId: archiveRunId, url: archiveUrl, key: archiveKey });
       }
@@ -530,7 +534,13 @@ export default function Page() {
       a.remove();
       window.URL.revokeObjectURL(url);
 
-      setStatus(`Concluído! ZIP gerado com 2 PDFs.${archiveRunId ? " Arquivado (R2): " + archiveRunId : ""}`);
+      if (archiveRunId) {
+        setStatus(`Concluído! ZIP gerado com 2 PDFs. Arquivado (R2): ${archiveRunId}`);
+      } else if (archiveWarnHeader) {
+        setStatus(`Concluído! ZIP gerado com 2 PDFs. Aviso no arquivamento (R2): ${archiveWarnHeader}`);
+      } else {
+        setStatus(`Concluído! ZIP gerado com 2 PDFs.`);
+      }
     } catch (e: any) {
       setStatus(`Falha ao gerar ZIP: ${String(e)}`);
     } finally {
