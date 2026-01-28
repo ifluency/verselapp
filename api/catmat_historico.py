@@ -30,14 +30,6 @@ def _fmt_date_br(d: date | None) -> str:
 
 
 def _pregao_from_id_compra(id_compra: str | None) -> str:
-    """Deriva pregão a partir do id_compra.
-
-    Regra prática:
-      - Ano = últimos 4 dígitos
-      - Número = 5 dígitos antes do ano
-      - Se número começar com 9, remove o 9 e usa os 4 restantes
-      - Formata como XXX/AAAA (padding)
-    """
     if not id_compra:
         return ""
     s = str(id_compra).strip()
@@ -57,42 +49,44 @@ def _pregao_from_id_compra(id_compra: str | None) -> str:
         return ""
 
 
-def _compra_link(id_compra: str | None) -> str:
+def _item_link(id_compra: str | None, numero_item_pncp) -> str:
     if not id_compra:
         return ""
     s = str(id_compra).strip()
     if not s:
         return ""
+    try:
+        n = int(numero_item_pncp) if numero_item_pncp is not None else None
+    except Exception:
+        n = None
+    if n is None:
+        # fallback: link do pregão
+        return (
+            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
+            f"acompanhamento-compra?compra={s}"
+        )
     return (
         "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
-        f"acompanhamento-compra?compra={s}"
+        f"acompanhamento-compra/item/-{n}?compra={s}"
     )
-
-
-def _json_safe(v):
-    """Converte tipos não serializáveis (ex.: Decimal) para JSON-safe."""
-    if v is None:
-        return None
-    if isinstance(v, Decimal):
-        try:
-            return float(v)
-        except Exception:
-            return None
-    return v
 
 
 def _to_float(x):
     if x is None:
         return None
     if isinstance(x, Decimal):
-        try:
-            return float(x)
-        except Exception:
-            return None
+        return float(x)
     try:
         return float(x)
     except Exception:
         return None
+
+
+def _pick(d: dict, *keys, default=""):
+    for k in keys:
+        if k in d and d[k] is not None and str(d[k]).strip() != "":
+            return d[k]
+    return default
 
 
 class handler(BaseHTTPRequestHandler):
@@ -101,7 +95,6 @@ class handler(BaseHTTPRequestHandler):
         debug_mode = q.get("debug", ["0"])[0] in ("1", "true", "True", "yes", "sim")
 
         catmat = (q.get("catmat", [""])[0] or "").strip()
-
         if not catmat:
             payload = {
                 "error": "Parâmetro 'catmat' é obrigatório.",
@@ -126,33 +119,21 @@ class handler(BaseHTTPRequestHandler):
             conn = psycopg2.connect(dsn, sslmode="require")
             try:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    # Consulta direta na tabela (não depende das views)
                     cur.execute(
                         """
                         SELECT
                           i.cod_item_catalogo::text AS catmat,
-                          i.descricao_resumida,
-                          i.material_ou_servico,
-                          i.unidade_medida,
                           i.id_compra::text AS id_compra,
                           i.id_compra_item::text AS id_compra_item,
                           i.numero_item_pncp,
-                          i.numero_controle_pncp_compra,
-                          c.codigo_modalidade,
-                          c.data_publicacao_pncp,
                           i.data_resultado,
-                          i.quantidade,
                           i.valor_unitario_estimado,
                           i.valor_unitario_resultado,
-                          i.nome_fornecedor,
-                          i.situacao_compra_item_nome,
-                          i.data_atualizacao_pncp,
-                          i.data_inclusao_pncp
+                          row_to_json(i) AS item_json
                         FROM contratacao_item_pncp_14133 i
-                        LEFT JOIN contratacao_pncp_14133 c
-                          ON c.id_compra = i.id_compra
                         WHERE i.cod_item_catalogo IS NOT NULL
                           AND i.cod_item_catalogo::text = %s
+                          AND i.criterio_julgamento_id_pncp = 1
                         ORDER BY i.data_resultado DESC NULLS LAST,
                                  i.data_atualizacao_pncp DESC NULLS LAST,
                                  i.data_inclusao_pncp DESC NULLS LAST,
@@ -166,39 +147,34 @@ class handler(BaseHTTPRequestHandler):
                 conn.close()
 
             out_rows = []
+            seq = 1
             for r in rows:
                 id_compra = str(r.get("id_compra") or "").strip()
+                num_item = r.get("numero_item_pncp")
                 d_res = _as_date(r.get("data_resultado"))
-                d_pub = _as_date(r.get("data_publicacao_pncp"))
+
+                item_json = r.get("item_json") or {}
+                fornecedor = str(_pick(item_json, "nome_fornecedor", "nomeFornecedor", default="") or "").strip()
+                situacao = str(_pick(item_json, "situacao_compra_item_nome", "situacaoCompraItemNome", default="") or "").strip()
 
                 v_est = _to_float(r.get("valor_unitario_estimado"))
                 v_res = _to_float(r.get("valor_unitario_resultado"))
 
                 out_rows.append(
                     {
-                        "catmat": str(r.get("catmat") or "").strip(),
-                        "descricao_resumida": str(r.get("descricao_resumida") or "").strip(),
-                        "material_ou_servico": str(r.get("material_ou_servico") or "").strip(),
-                        "unidade_medida": str(r.get("unidade_medida") or "").strip(),
-                        "id_compra": id_compra,
-                        "id_compra_item": str(r.get("id_compra_item") or "").strip(),
-                        "numero_item_pncp": _json_safe(r.get("numero_item_pncp")),
-                        "numero_controle_pncp_compra": str(r.get("numero_controle_pncp_compra") or "").strip(),
-                        "codigo_modalidade": _json_safe(r.get("codigo_modalidade")),
-                        "data_publicacao_pncp_iso": d_pub.isoformat() if d_pub else None,
-                        "data_publicacao_pncp_br": _fmt_date_br(d_pub),
+                        "seq": seq,
                         "data_resultado_iso": d_res.isoformat() if d_res else None,
                         "data_resultado_br": _fmt_date_br(d_res),
                         "pregao": _pregao_from_id_compra(id_compra),
-                        "quantidade": _json_safe(r.get("quantidade")),
-                        "valor_unitario_estimado_num": v_est,
-                        "valor_unitario_resultado_num": v_res,
-                        "resultado_status": "ok" if v_res is not None else "fracassado",
-                        "nome_fornecedor": str(r.get("nome_fornecedor") or "").strip(),
-                        "situacao_compra_item_nome": str(r.get("situacao_compra_item_nome") or "").strip(),
-                        "compra_link": _compra_link(id_compra),
+                        "numero_item_pncp": num_item,
+                        "situacao": situacao,
+                        "fornecedor": fornecedor,
+                        "link": _item_link(id_compra, num_item),
+                        "valor_estimado_num": v_est,
+                        "valor_licitado_num": v_res,  # null => fracassado no front
                     }
                 )
+                seq += 1
 
             return self._send_json(200, {"catmat": catmat, "rows": out_rows, "count": len(out_rows)})
 
