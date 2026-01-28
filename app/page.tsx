@@ -1,50 +1,53 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import React, { useEffect, useState } from "react";
 
-const AUTH_KEY = "upde_auth_v1";
-const USER = "admin";
-const PASS = "upde@2026";
-
-function isAuthed(): boolean {
+function getStorage(key: string): string {
   try {
-    return window.localStorage.getItem(AUTH_KEY) === "1";
+    return localStorage.getItem(key) || "";
   } catch {
-    return false;
+    return "";
   }
+}
+function setStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
 }
 
 export default function LoginPage() {
-  const router = useRouter();
-
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string>("");
-
-  const canSubmit = useMemo(() => username.trim().length > 0 && password.length > 0, [username, password]);
+  const [usuario, setUsuario] = useState("");
+  const [senha, setSenha] = useState("");
+  const [error, setError] = useState("");
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // Se já estiver autenticado, pula a tela de login.
-    if (isAuthed()) router.replace("/precos");
-  }, [router]);
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-
-    if (username.trim() === USER && password === PASS) {
-      try {
-        window.localStorage.setItem(AUTH_KEY, "1");
-      } catch {
-        // Se o storage falhar, ainda assim tenta navegar (auth guard irá bloquear).
-      }
-      router.replace("/precos");
+    // Se já estiver autenticado, redireciona automaticamente
+    const token = getStorage("UPDE_AUTH");
+    if (token === "1") {
+      window.location.href = "/precos";
       return;
     }
+    setReady(true);
+  }, []);
 
+  function doLogin() {
+    setError("");
+
+    // Autenticação simples por env (fallback para credenciais padrão se não definido)
+    // OBS: Isso NÃO é segurança real — é apenas “barreira” de acesso.
+    const USER = (process.env.NEXT_PUBLIC_LOGIN_USER || "admin").trim();
+    const PASS = (process.env.NEXT_PUBLIC_LOGIN_PASS || "admin").trim();
+
+    if (usuario.trim() === USER && senha === PASS) {
+      setStorage("UPDE_AUTH", "1");
+      window.location.href = "/precos";
+      return;
+    }
     setError("Usuário ou senha inválidos.");
   }
+
+  if (!ready) return null;
 
   return (
     <main
@@ -53,114 +56,86 @@ export default function LoginPage() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "24px 16px",
+        padding: "24px 6px",
         background: "#ffffff",
       }}
     >
       <div
         style={{
-          width: "100%",
-          maxWidth: 520,
+          width: "min(520px, 100%)",
           border: "1px solid #e5e7eb",
-          borderRadius: 16,
+          borderRadius: 14,
           padding: 18,
-          boxShadow: "0 12px 40px rgba(17, 24, 39, 0.08)",
+          boxShadow: "0 8px 28px rgba(0,0,0,0.06)",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
-            flexWrap: "wrap",
-            paddingBottom: 12,
-            borderBottom: "1px solid #e5e7eb",
-            marginBottom: 14,
-          }}
-        >
-          <div>
-            <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0.2 }}>PAINEL DE FERRAMENTAS - UPDE</div>
-            <div style={{ marginTop: 4, color: "#4b5563", fontSize: 13 }}>
-              Ferramentas utilizadas pela UPDE | HUSM
-            </div>
-          </div>
-
-          <img
-            src="/header_logos.png"
-            alt="Logos institucionais"
-            style={{ height: 44, width: "auto", display: "block" }}
-          />
+        <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 6 }}>
+          Análise de Preços - UPDE
+        </div>
+        <div style={{ color: "#6b7280", marginBottom: 14, fontSize: 14 }}>
+          Formação de preços de referência com base em pesquisa do ComprasGOV
         </div>
 
-        <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontWeight: 800, fontSize: 13 }}>Usuário</label>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              placeholder="Digite seu usuário"
-              style={{
-                height: 40,
-                borderRadius: 10,
-                border: "1px solid #cbd5e1",
-                padding: "0 12px",
-                fontSize: 14,
-              }}
-            />
+        <label style={{ display: "block", fontWeight: 700, marginBottom: 6 }}>
+          Usuário
+        </label>
+        <input
+          value={usuario}
+          onChange={(e) => setUsuario(e.target.value)}
+          placeholder="Digite o usuário"
+          style={{
+            width: "100%",
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid #d1d5db",
+            marginBottom: 12,
+            fontSize: 14,
+          }}
+        />
+
+        <label style={{ display: "block", fontWeight: 700, marginBottom: 6 }}>
+          Senha
+        </label>
+        <input
+          value={senha}
+          onChange={(e) => setSenha(e.target.value)}
+          type="password"
+          placeholder="Digite a senha"
+          style={{
+            width: "100%",
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid #d1d5db",
+            marginBottom: 12,
+            fontSize: 14,
+          }}
+        />
+
+        {error && (
+          <div style={{ color: "#b91c1c", marginBottom: 10, fontWeight: 700 }}>
+            {error}
           </div>
+        )}
 
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontWeight: 800, fontSize: 13 }}>Senha</label>
-            <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              type="password"
-              autoComplete="current-password"
-              placeholder="Digite sua senha"
-              style={{
-                height: 40,
-                borderRadius: 10,
-                border: "1px solid #cbd5e1",
-                padding: "0 12px",
-                fontSize: 14,
-              }}
-            />
-          </div>
+        <button
+          onClick={doLogin}
+          style={{
+            width: "100%",
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid #0f172a",
+            background: "#111827",
+            color: "white",
+            fontWeight: 900,
+            cursor: "pointer",
+          }}
+        >
+          Entrar
+        </button>
 
-          {error && (
-            <div
-              style={{
-                border: "1px solid #fecaca",
-                background: "#fef2f2",
-                color: "#991b1b",
-                borderRadius: 10,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-              }}
-            >
-              {error}
-            </div>
-          )}
-
-          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
-            <button
-              type="submit"
-              className={`btn ${canSubmit ? "btnCta" : "btnPrimary"}`}
-              disabled={!canSubmit}
-              title={!canSubmit ? "Preencha usuário e senha" : "Entrar"}
-              style={{ height: 40, minWidth: 140 }}
-            >
-              Entrar
-            </button>
-
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Acesso restrito — necessário login para visualizar as aplicações.
-            </div>
-          </div>
-        </form>
+        <div style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
+          * Acesso restrito (barreira simples).
+        </div>
       </div>
     </main>
   );
