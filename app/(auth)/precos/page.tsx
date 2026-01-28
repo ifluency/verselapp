@@ -182,6 +182,9 @@ export default function Page() {
   const [pncpHistError, setPncpHistError] = useState<string>("");
   const [pncpHistRows, setPncpHistRows] = useState<PncpHistoricoRow[]>([]);
 
+  // Arquivamento (R2)
+  const [archiveInfo, setArchiveInfo] = useState<{ runId: string; url: string; key: string } | null>(null);
+
   // Modal state
   const [modalItemId, setModalItemId] = useState<string | null>(null);
   const modalItem = useMemo(
@@ -211,6 +214,7 @@ export default function Page() {
     setPreview([]);
     setOverrides({});
     setLastQuotes({});
+    setArchiveInfo(null);
     setPncpUltimoByItem({});
     closePncpHistorico();
     setModalItemId(null);
@@ -423,6 +427,7 @@ export default function Page() {
     setPreview([]);
     setOverrides({});
     setLastQuotes({});
+    setArchiveInfo(null);
 
     try {
       const form = new FormData();
@@ -506,6 +511,14 @@ export default function Page() {
         setStatus(`Falha ao processar: ${msg}`);
         return;
       }
+
+      // Cabeçalhos de arquivamento (R2)
+      const archiveRunId = res.headers.get("x-archive-run-id") || "";
+      const archiveUrl = res.headers.get("x-archive-url") || "";
+      const archiveKey = res.headers.get("x-archive-r2-key") || "";
+      if (archiveRunId || archiveUrl || archiveKey) {
+        setArchiveInfo({ runId: archiveRunId, url: archiveUrl, key: archiveKey });
+      }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -517,13 +530,26 @@ export default function Page() {
       a.remove();
       window.URL.revokeObjectURL(url);
 
-      setStatus("Concluído! ZIP gerado com 2 PDFs.");
+      setStatus(`Concluído! ZIP gerado com 2 PDFs.${archiveRunId ? " Arquivado (R2): " + archiveRunId : ""}`);
     } catch (e: any) {
       setStatus(`Falha ao gerar ZIP: ${String(e)}`);
     } finally {
       setLoadingGenerate(false);
     }
   }
+
+  async function copyArchiveLink() {
+    const url = archiveInfo?.url || "";
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setStatus("Link do arquivamento (R2) copiado para a área de transferência.");
+    } catch {
+      // Fallback: tenta prompt
+      window.prompt("Copie o link do arquivamento (R2):", url);
+    }
+  }
+
 
   const canGenerate =
     !!file &&
@@ -684,6 +710,54 @@ export default function Page() {
           style={{ marginTop: 12 }}
           dangerouslySetInnerHTML={{ __html: sanitizeStatusHtml(status) }}
         />
+      )}
+
+
+      {archiveInfo && (archiveInfo.runId || archiveInfo.url || archiveInfo.key) && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: "10px 12px",
+            border: "1px solid #e5e7eb",
+            borderRadius: 10,
+            background: "#f9fafb",
+            fontSize: 13,
+          }}
+        >
+          {archiveInfo.runId && (
+            <div>
+              <b>Arquivamento (R2):</b> {archiveInfo.runId}
+            </div>
+          )}
+          {archiveInfo.key && (
+            <div style={{ marginTop: 4, color: "#374151" }}>
+              <b>Chave:</b> {archiveInfo.key}
+            </div>
+          )}
+          {archiveInfo.url && (
+            <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={copyArchiveLink}
+                style={{
+                  border: "1px solid #0f172a",
+                  background: "#0f172a",
+                  color: "white",
+                  padding: "7px 10px",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 700,
+                }}
+              >
+                Copiar link do arquivamento
+              </button>
+              <span style={{ fontSize: 12, color: "#6b7280" }}>
+                O link expira automaticamente.
+              </span>
+            </div>
+          )}
+        </div>
       )}
 
       {preview.length > 0 && (
