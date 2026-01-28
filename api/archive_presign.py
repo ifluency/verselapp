@@ -53,6 +53,36 @@ def _r2_client_from_env():
         return None, str(e)
 
 
+
+def _ensure_schema(conn):
+    """Garante que as tabelas mínimas existam (evita UndefinedTable em ambientes novos)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS listas ("
+            " id SERIAL PRIMARY KEY,"
+            " numero_lista TEXT UNIQUE NOT NULL,"
+            " nome_lista TEXT,"
+            " processo_sei TEXT,"
+            " responsavel_atual TEXT,"
+            " created_at TIMESTAMPTZ DEFAULT NOW(),"
+            " updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ");"
+        )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS lista_runs ("
+            " id UUID PRIMARY KEY,"
+            " lista_id INTEGER NOT NULL REFERENCES listas(id) ON DELETE CASCADE,"
+            " run_number INTEGER NOT NULL,"
+            " saved_at TIMESTAMPTZ DEFAULT NOW(),"
+            " r2_key_archive_zip TEXT NOT NULL,"
+            " presigned_get_url TEXT,"
+            " sha256_zip TEXT,"
+            " size_bytes BIGINT,"
+            " payload_json JSONB"
+            ");"
+        )
+    conn.commit()
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
@@ -78,6 +108,8 @@ class handler(BaseHTTPRequestHandler):
             expires = max(60, min(expires, 60 * 60 * 24))  # 1 min .. 24h
 
             conn = psycopg2.connect(dsn, sslmode="require")
+
+            _ensure_schema(conn)
             try:
                 with conn.cursor() as cur:
                     cur.execute(
