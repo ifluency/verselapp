@@ -113,7 +113,6 @@ export default function ArquivamentosPage() {
         return;
       }
       const url = data.url as string;
-      // força download em nova aba
       window.open(url, "_blank", "noopener,noreferrer");
       setStatus("Download iniciado.");
     } catch (e: any) {
