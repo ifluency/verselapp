@@ -186,6 +186,13 @@ export default function Page() {
   const [archiveInfo, setArchiveInfo] = useState<{ runId: string; url: string; key: string } | null>(null);
   const [archiveWarn, setArchiveWarn] = useState<string>("");
 
+// Edição (reabrir run arquivado)
+const [editRunId, setEditRunId] = useState<string>("");
+const [isHydratingEdit, setIsHydratingEdit] = useState<boolean>(false);
+const [pendingEditPayload, setPendingEditPayload] = useState<any | null>(null);
+const hydratingEditRef = React.useRef<boolean>(false);
+
+
   // Modal state
   const [modalItemId, setModalItemId] = useState<string | null>(null);
   const modalItem = useMemo(
@@ -211,22 +218,84 @@ export default function Page() {
   const focusPreview = !!file && !previewReady;
 
   // Ao trocar o arquivo, reseta o fluxo e reabilita a prévia
-  useEffect(() => {
-    setPreview([]);
-    setOverrides({});
-    setLastQuotes({});
-    setArchiveInfo(null);
-    setPncpUltimoByItem({});
-    closePncpHistorico();
-    setModalItemId(null);
-    setActiveLastQuoteRow(null);
+useEffect(() => {
+  setPreview([]);
+  setOverrides({});
+  setLastQuotes({});
+  setArchiveInfo(null);
+  setPncpUltimoByItem({});
+  closePncpHistorico();
+  setModalItemId(null);
+  setActiveLastQuoteRow(null);
+  setPreviewReady(false);
+
+  // Em modo "editar run", não limpamos os campos meta nem o status aqui (eles vêm do run).
+  if (!hydratingEditRef.current) {
     setStatus("");
-    setPreviewReady(false);
     setNumeroLista("");
     setNomeLista("");
     setProcessoSEI("");
     setResponsavel("");
-  }, [file?.name, file?.size, file?.lastModified]);
+  }
+}, [file?.name, file?.size, file?.lastModified]);
+// Se vier de "Arquivamentos" (Editar), carrega o run automaticamente e gera a prévia
+useEffect(() => {
+  const params = new URLSearchParams(window.location.search);
+  const rid = params.get("edit_run_id");
+  if (rid) startEditFromRun(rid);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+// Quando o arquivo do run estiver carregado, gera a prévia automaticamente
+useEffect(() => {
+  if (!isHydratingEdit) return;
+  if (!file) return;
+  if (!pendingEditPayload) return;
+  if (loadingPreview || previewReady) return;
+  loadPreview();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [isHydratingEdit, file?.name, file?.size, file?.lastModified]);
+
+// Após a prévia carregar, aplica last_quotes e overrides do run para edição
+useEffect(() => {
+  if (!isHydratingEdit) return;
+  if (!previewReady) return;
+  if (!pendingEditPayload) return;
+
+  const pl = pendingEditPayload || {};
+
+  // last_quotes: number -> string (fmtSmart)
+  const lqNum = (pl.last_quotes || {}) as Record<string, number>;
+  const lqStr: Record<string, string> = {};
+  for (const [itemId, v] of Object.entries(lqNum)) {
+    if (typeof v === "number" && Number.isFinite(v)) lqStr[itemId] = fmtSmart(v);
+  }
+  setLastQuotes((prev) => ({ ...prev, ...lqStr }));
+
+  // manual_overrides: converte para o tipo do front
+  const mo = (pl.manual_overrides || {}) as Record<
+    string,
+    { included_indices: number[]; method: "media" | "mediana"; justificativa_codigo?: string; justificativa_texto?: string }
+  >;
+  const nextOverrides: Record<string, ManualOverride> = {};
+  for (const [itemId, ov] of Object.entries(mo)) {
+    if (!ov) continue;
+    nextOverrides[itemId] = {
+      includedIndices: Array.isArray(ov.included_indices) ? ov.included_indices : [],
+      method: ov.method === "mediana" ? "mediana" : "media",
+      justificativaCodigo: String(ov.justificativa_codigo || ""),
+      justificativaTexto: String(ov.justificativa_texto || ""),
+    };
+  }
+  setOverrides(nextOverrides);
+
+  setStatus(`Cotação arquivada carregada para edição. Run: ${editRunId}`);
+  setPendingEditPayload(null);
+  setIsHydratingEdit(false);
+  hydratingEditRef.current = false;
+}, [isHydratingEdit, previewReady]);
+
+
 
   const modalIdxToVal = useMemo(() => {
     const m = new Map<number, number>();
@@ -416,8 +485,65 @@ export default function Page() {
     setPncpHistError("");
     setPncpHistRows([]);
   }
+async function startEditFromRun(runId: string) {
+  const rid = String(runId || "").trim();
+  if (!rid) return;
 
-  async function loadPreview() {
+  setStatus("Carregando cotação arquivada para edição...");
+  setEditRunId(rid);
+
+  // Marca modo edição para evitar limpar campos meta durante a troca do arquivo.
+  setIsHydratingEdit(true);
+  hydratingEditRef.current = true;
+
+  try {
+    const res = await fetch(`/api/archive_load?run_id=${encodeURIComponent(rid)}`);
+    const data = await res.json();
+    if (!res.ok) {
+      setStatus(data?.error ? `Falha ao carregar run: ${String(data.error)}` : "Falha ao carregar run.");
+      setIsHydratingEdit(false);
+      hydratingEditRef.current = false;
+      return;
+    }
+
+    // Campos meta
+    setNumeroLista(String(data.numero_lista || ""));
+    setNomeLista(String(data.nome_lista || ""));
+    setProcessoSEI(String(data.processo_sei || ""));
+    setResponsavel(String(data.responsavel || ""));
+
+    setPendingEditPayload(data.payload_json || {});
+
+    // Baixa o PDF do run (presigned) e injeta como File no fluxo padrão
+    const inputUrl = String(data.input_presigned_url || "").trim();
+    if (!inputUrl) {
+      setStatus("Run carregado, mas não foi possível obter o input.pdf (URL vazia).");
+      setIsHydratingEdit(false);
+      hydratingEditRef.current = false;
+      return;
+    }
+
+    const pdfRes = await fetch(inputUrl);
+    if (!pdfRes.ok) {
+      setStatus("Falha ao baixar o PDF arquivado (input.pdf).");
+      setIsHydratingEdit(false);
+      hydratingEditRef.current = false;
+      return;
+    }
+    const blob = await pdfRes.blob();
+    const fname = `Lista_${safeSlug(String(data.numero_lista || rid))}.pdf`;
+    const f = new File([blob], fname, { type: "application/pdf" });
+
+    // Isso dispara o fluxo padrão (useEffect de troca de arquivo + botão de prévia).
+    setFile(f);
+  } catch (e: any) {
+    setStatus(`Falha ao carregar run: ${String(e)}`);
+    setIsHydratingEdit(false);
+    hydratingEditRef.current = false;
+  }
+}
+
+async function loadPreview() {
     if (!file) {
       setStatus("Selecione um PDF primeiro.");
       return;
