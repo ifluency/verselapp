@@ -64,18 +64,18 @@ def _item_link(id_compra, numero_item_pncp):
     s = str(id_compra).strip()
     if not s:
         return ""
-
     try:
         n = int(numero_item_pncp) if numero_item_pncp is not None else None
     except Exception:
         n = None
-
-    base = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra"
     if n is None:
-        return f"{base}?compra={s}"
-
-    # ✅ novo formato solicitado
-    return f"{base}/item/{n}?compra={s}"
+        return (
+            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
+            f"acompanhamento-compra?compra={s}"
+        )
+    return (
+        "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/"
+        f"acompanhamento-compra/item/-{n}?compra={s}"
     )
 
 
