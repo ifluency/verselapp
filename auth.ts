@@ -68,6 +68,10 @@ async function ensureBootstrapAdmin() {
   `;
 }
 
+function asString(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
 export const {
   handlers: { GET, POST },
   auth,
@@ -89,8 +93,8 @@ export const {
         password: { label: "Senha", type: "password" },
       },
       async authorize(credentials) {
-        const email = (credentials?.email || "").trim().toLowerCase();
-        const password = credentials?.password || "";
+        const email = asString(credentials?.email).trim().toLowerCase();
+        const password = asString(credentials?.password);
 
         if (!email || !password) return null;
 
@@ -147,7 +151,7 @@ export const {
     },
 
     /**
-     * Protege rotas via middleware (usado quando auth() roda no middleware).
+     * Protege rotas via middleware.
      * Mantém "/" e "/api/auth/*" públicos; demais precisam de sessão.
      */
     authorized({ auth, request }) {
