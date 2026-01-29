@@ -68,21 +68,21 @@ def _r2_client_from_env():
         return None, str(e)
 
 
-def _upload_archive_to_r2(archive_bytes: bytes, input_pdf_bytes: bytes, lista_meta: dict):
+def _upload_archive_to_r2(archive_bytes: bytes, lista_meta: dict):
     """
     Best-effort.
-    Returns: (run_id, r2_key_archive, r2_key_input_pdf, presigned_url, err)
+    Returns: (run_id, r2_key, presigned_url, err)
     """
     bucket = (os.environ.get("R2_BUCKET") or "").strip()
     prefix = (os.environ.get("R2_PREFIX") or "precos").strip().strip("/")
     expires = int((os.environ.get("R2_PRESIGN_EXPIRES") or "3600").strip() or "3600")
 
     if not bucket:
-        return None, None, None, None, "R2_BUCKET ausente"
+        return None, None, None, "R2_BUCKET ausente"
 
     s3, err = _r2_client_from_env()
     if s3 is None:
-        return None, None, None, None, err or "cliente R2 indisponível"
+        return None, None, None, err or "cliente R2 indisponível"
 
     run_id = str(uuid.uuid4())
 
@@ -96,7 +96,6 @@ def _upload_archive_to_r2(archive_bytes: bytes, input_pdf_bytes: bytes, lista_me
     numero_slug = _safe_slug(numero)
     year = ts.strftime("%Y")
     r2_key = f"{prefix}/{year}/{numero_slug}/{run_id}/archive.zip"
-    r2_key_input_pdf = f"{prefix}/{year}/{numero_slug}/{run_id}/input.pdf"
 
     try:
         # Evitar Metadata com caracteres não ASCII (pode quebrar o upload).
@@ -107,23 +106,49 @@ def _upload_archive_to_r2(archive_bytes: bytes, input_pdf_bytes: bytes, lista_me
             Body=archive_bytes,
             ContentType="application/zip",
         )
-        s3.put_object(
-            Bucket=bucket,
-            Key=r2_key_input_pdf,
-            Body=input_pdf_bytes,
-            ContentType="application/pdf",
-        )
         presigned = s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": bucket, "Key": r2_key},
             ExpiresIn=expires,
         )
-        return run_id, r2_key, r2_key_input_pdf, presigned, ""
+        return run_id, r2_key, presigned, ""
     except Exception as e:
-        return None, None, None, None, str(e)
+        return None, None, None, str(e)
 
 
-def _persist_run_to_neon(run_id: str, r2_key: str, r2_key_input_pdf: str, presigned_url: str, archive_sha256: str, archive_size: int, lista_meta: dict, payload: dict):
+
+def _upload_input_pdf_to_r2(pdf_bytes: bytes, r2_key_archive: str):
+    """
+    Best-effort: store original input.pdf next to the archive.
+    Returns: (r2_key_input_pdf, err)
+    """
+    bucket = (os.environ.get("R2_BUCKET") or "").strip()
+    expires = int((os.environ.get("R2_PRESIGN_EXPIRES") or "3600").strip() or "3600")
+    if not bucket:
+        return None, "R2_BUCKET ausente"
+
+    s3, err = _r2_client_from_env()
+    if s3 is None:
+        return None, err or "cliente R2 indisponível"
+
+    if not r2_key_archive:
+        return None, "r2_key_archive ausente"
+
+    base_prefix = r2_key_archive.rsplit("/", 1)[0]
+    r2_key_input = f"{base_prefix}/input.pdf"
+    try:
+        s3.put_object(
+            Bucket=bucket,
+            Key=r2_key_input,
+            Body=pdf_bytes,
+            ContentType="application/pdf",
+        )
+        # Optional presign not needed here; load endpoint will presign
+        return r2_key_input, ""
+    except Exception as e:
+        return None, str(e)
+
+def _persist_run_to_neon(run_id: str, r2_key: str, presigned_url: str, archive_sha256: str, archive_size: int, lista_meta: dict, payload: dict, r2_key_input_pdf: str | None = None):
     """
     Best-effort. Creates tables if not exist.
     """
@@ -158,7 +183,7 @@ def _persist_run_to_neon(run_id: str, r2_key: str, r2_key_input_pdf: str, presig
                     " lista_id INTEGER NOT NULL REFERENCES listas(id) ON DELETE CASCADE,"
                     " run_number INTEGER NOT NULL,"
                     " saved_at TIMESTAMPTZ DEFAULT NOW(),"
-                    " r2_key_archive_zip TEXT NOT NULL," " r2_key_input_pdf TEXT,"
+                    " r2_key_archive_zip TEXT NOT NULL,"
                     " presigned_get_url TEXT,"
                     " sha256_zip TEXT,"
                     " size_bytes BIGINT,"
@@ -166,10 +191,21 @@ def _persist_run_to_neon(run_id: str, r2_key: str, r2_key_input_pdf: str, presig
                     ");"
                 )
 
-                # Patch colunas novas
-                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_input_pdf TEXT;")
+                
+                # Patch schema (new columns used by /api/archive router)
+                cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS nome_lista TEXT;")
+                cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS responsavel TEXT;")
+                cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS processo_sei TEXT;")
+                cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();")
+                cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();")
 
-                # Upsert lista
+                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_id UUID;")
+                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();")
+                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
+                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_input_pdf TEXT;")
+                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_size_bytes BIGINT;")
+                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS payload_json JSONB;")
+# Upsert lista
                 cur.execute(
                     "INSERT INTO listas (numero_lista, nome_lista, processo_sei, responsavel_atual)"
                     " VALUES (%s, %s, %s, %s)"
@@ -188,8 +224,8 @@ def _persist_run_to_neon(run_id: str, r2_key: str, r2_key_input_pdf: str, presig
                 run_number = int(cur.fetchone()[0] or 0) + 1
 
                 cur.execute(
-                    "INSERT INTO lista_runs (id, lista_id, run_number, r2_key_archive_zip, r2_key_input_pdf, presigned_get_url, sha256_zip, size_bytes, payload_json)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);",
+                    "INSERT INTO lista_runs (id, lista_id, run_number, r2_key_archive_zip, presigned_get_url, sha256_zip, size_bytes, payload_json, run_id, created_at, r2_key_archive, r2_key_input_pdf, archive_size_bytes)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s);",
                     (
                         run_id,
                         lista_id,
@@ -199,6 +235,10 @@ def _persist_run_to_neon(run_id: str, r2_key: str, r2_key_input_pdf: str, presig
                         archive_sha256,
                         archive_size,
                         PgJson(payload) if PgJson else json.dumps(payload, ensure_ascii=False),
+                        run_id,
+                        r2_key,
+                        r2_key_input_pdf,
+                        archive_size,
                     ),
                 )
 
@@ -325,9 +365,14 @@ class handler(BaseHTTPRequestHandler):
             archive_err = ""
 
             if os.environ.get("R2_ACCESS_KEY_ID") and os.environ.get("R2_SECRET_ACCESS_KEY") and os.environ.get("R2_BUCKET") and os.environ.get("R2_ENDPOINT"):
-                run_id, r2_key, r2_key_input_pdf, presigned_url, archive_err = _upload_archive_to_r2(archive_bytes, pdf_bytes, lista_meta)
+                run_id, r2_key, presigned_url, archive_err = _upload_archive_to_r2(archive_bytes, lista_meta)
 
                 if run_id and r2_key:
+                    # Salva também o PDF original (input.pdf) para permitir "editar" 100% automático
+                    input_key, input_err = _upload_input_pdf_to_r2(pdf_bytes, r2_key)
+                    if input_err:
+                        print("WARN upload input.pdf:", input_err)
+
                     db_err = _persist_run_to_neon(
                         run_id=run_id,
                         r2_key=r2_key,
@@ -336,6 +381,7 @@ class handler(BaseHTTPRequestHandler):
                         archive_size=archive_size,
                         lista_meta=lista_meta,
                         payload=payload,
+                        r2_key_input_pdf=input_key or "",
                     )
                     if db_err:
                         print("WARN persist Neon:", db_err)
@@ -374,9 +420,28 @@ class handler(BaseHTTPRequestHandler):
             if debug_mode:
                 self._send_text(500, f"Erro ao processar:\n{str(e)}\n\nSTACKTRACE:\n{tb}")
             else:
-                self._send_text(500, "Falha ao processar. Tente novamente ou use /api/generate?debug=1 para ver detalhes.")
+                self._send_text(500, f"Falha ao processar: {str(e)}")
 
     def do_GET(self):
+        # Página simples para depuração sem ferramentas externas.
+        q = parse_qs(urlparse(self.path).query)
+        debug = (q.get("debug", [""])[0] or "").strip()
+        if debug == "1":
+            html = """<!doctype html><html><head><meta charset='utf-8'/><title>Debug /api/generate</title></head>
+<body style='font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding: 20px; max-width: 860px;'>
+<h2>Debug /api/generate (POST multipart/form-data)</h2>
+<p>Use este formulário para enviar um PDF e (opcional) um payload JSON. A resposta de erro virá completa.</p>
+<form method='POST' enctype='multipart/form-data' action='/api/generate?debug=1'>
+  <div style='margin: 10px 0;'><label>file (PDF): <input type='file' name='file' accept='application/pdf' required></label></div>
+  <div style='margin: 10px 0;'><label>payload (JSON):</label><br><textarea name='payload' rows='10' style='width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;'></textarea></div>
+  <button type='submit'>Enviar</button>
+</form>
+</body></html>"""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html.encode("utf-8"))
+            return
         self._send_text(405, "Use POST com multipart/form-data (campo 'file' e opcional 'payload').")
 
     def _send_text(self, status: int, msg: str):
