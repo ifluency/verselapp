@@ -105,11 +105,19 @@ def _ensure_schema(cur):
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_sha256 TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS payload_json JSONB;")
 
+    # Legacy columns used by older generate.py versions
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive_zip TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS presigned_get_url TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS sha256_zip TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS size_bytes BIGINT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ DEFAULT NOW();")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_number INTEGER;")
+
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS responsavel_atual TEXT;")
+
+
     # Copy forward older column names if they exist
     if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
-    if _column_exists(cur, "lista_runs", "r2_key_archive_zip") and _column_exists(cur, "lista_runs", "r2_key_archive"):
-        cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key_archive_zip);")
-
         cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
     if _column_exists(cur, "lista_runs", "archive_size_byte") and _column_exists(cur, "lista_runs", "archive_size_bytes"):
         cur.execute("UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);")
@@ -127,9 +135,6 @@ def _ensure_schema(cur):
 
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_runs_run_id ON lista_runs (run_id) WHERE run_id IS NOT NULL;")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_lista_runs_lista_id_created ON lista_runs (lista_id, created_at DESC);")
-
-    if _column_exists(cur, "lista_runs", "saved_at") and _column_exists(cur, "lista_runs", "created_at"):
-        cur.execute("UPDATE lista_runs SET created_at = COALESCE(saved_at, created_at) WHERE saved_at IS NOT NULL;")
 
 
 def _action_runs(cur, filtro_lista: str):
@@ -149,15 +154,15 @@ def _action_runs(cur, filtro_lista: str):
             l.created_at AS salvo_em,
             l.updated_at AS ultima_edicao_em,
             COALESCE(r.run_id::text, r.id::text) AS latest_run_id,
-            COALESCE(r.archive_size_bytes, 0) AS tamanho_bytes,
-            COALESCE(r.r2_key_archive, '') AS r2_key_archive,
+            COALESCE(r.archive_size_bytes, r.size_bytes, 0) AS tamanho_bytes,
+            COALESCE(r.r2_key_archive, r.r2_key_archive_zip, r.r2_key, '') AS r2_key_archive,
             COALESCE(r.r2_key_input_pdf, '') AS r2_key_input_pdf
         FROM listas l
         LEFT JOIN LATERAL (
             SELECT id, run_id, archive_size_bytes, r2_key_archive, r2_key_input_pdf
             FROM lista_runs
             WHERE lista_id = l.id
-            ORDER BY COALESCE(created_at, saved_at) DESC NULLS LAST, id DESC
+            ORDER BY created_at DESC NULLS LAST, id DESC
             LIMIT 1
         ) r ON TRUE
         {where}
@@ -182,10 +187,10 @@ def _action_presign(conn, run_id_or_id: str):
 
         cur.execute(
             """
-            SELECT r2_key_archive
+            SELECT COALESCE(r2_key_archive, r2_key_archive_zip, r2_key) AS r2_key_archive
             FROM lista_runs
             WHERE (run_id::text = %s) OR (id::text = %s)
-            ORDER BY COALESCE(created_at, saved_at) DESC NULLS LAST, id DESC
+            ORDER BY created_at DESC NULLS LAST, id DESC
             LIMIT 1
             """,
             (run_id_or_id, run_id_or_id),
@@ -224,6 +229,8 @@ def _action_load(conn, run_id_or_id: str):
                 r.run_id,
                 r.created_at,
                 r.r2_key_archive,
+                r.r2_key_archive_zip,
+                r.r2_key,
                 r.r2_key_input_pdf,
                 r.payload_json,
                 l.numero_lista,
@@ -244,7 +251,7 @@ def _action_load(conn, run_id_or_id: str):
         if not row:
             return 404, {"error": "run_id não encontrado"}
 
-        r2_key_archive = (row.get("r2_key_archive") or "").strip()
+        r2_key_archive = (row.get("r2_key_archive") or row.get("r2_key_archive_zip") or row.get("r2_key") or "").strip()
         r2_key_input = (row.get("r2_key_input_pdf") or "").strip()
 
         # Legacy/failed runs saved without R2
@@ -254,13 +261,12 @@ def _action_load(conn, run_id_or_id: str):
                 "hint": "Este run foi salvo sem upload no R2 (ou falhou). Apague este run no histórico ou gere novamente a cotação para criar um novo arquivamento.",
                 "run_id": str(row.get("run_id") or row.get("id")),
             }
-        # Se não existe input.pdf salvo no R2, não é possível editar automaticamente este run.
-        # Este caso acontece quando a versão que arquivou salvou apenas o ZIP.
+        # Se não existe input.pdf arquivado, não tente reconstruir (pode causar timeout/Failed to fetch).
+        # Para edição 100% automática, o input.pdf deve ser salvo no R2 no momento do arquivamento.
         if not r2_key_input:
             return 409, {
-                "error": "Run não possui r2_key_input_pdf (PDF original).",
-                "hint": "Este arquivamento é de uma versão antiga que salvou apenas o ZIP. Para editar 100% automático, re-arquive a lista na versão atual (que salva o PDF original no R2).",
-                "run_id": str(row.get("run_id") or row.get("id")),
+                "error": "Run não possui r2_key_input_pdf",
+                "hint": "Este arquivamento não tem o PDF original salvo no R2. Gere e arquive novamente com a versão atual para habilitar edição automática.",
             }
 
         input_url = s3.generate_presigned_url(
@@ -296,7 +302,7 @@ def _action_delete(conn, run_id_or_id: str):
             SELECT id, lista_id, COALESCE(run_id::text, id::text) AS rid, r2_key_archive, r2_key_input_pdf
             FROM lista_runs
             WHERE (run_id::text = %s) OR (id::text = %s)
-            ORDER BY COALESCE(created_at, saved_at) DESC NULLS LAST, id DESC
+            ORDER BY created_at DESC NULLS LAST, id DESC
             LIMIT 1
             """,
             (run_id_or_id, run_id_or_id),
