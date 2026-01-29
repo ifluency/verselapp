@@ -68,21 +68,21 @@ def _r2_client_from_env():
         return None, str(e)
 
 
-def _upload_archive_to_r2(archive_bytes: bytes, lista_meta: dict):
+def _upload_archive_to_r2(archive_bytes: bytes, input_pdf_bytes: bytes, lista_meta: dict):
     """
     Best-effort.
-    Returns: (run_id, r2_key, presigned_url, err)
+    Returns: (run_id, r2_key_archive, r2_key_input_pdf, presigned_url, err)
     """
     bucket = (os.environ.get("R2_BUCKET") or "").strip()
     prefix = (os.environ.get("R2_PREFIX") or "precos").strip().strip("/")
     expires = int((os.environ.get("R2_PRESIGN_EXPIRES") or "3600").strip() or "3600")
 
     if not bucket:
-        return None, None, None, "R2_BUCKET ausente"
+        return None, None, None, None, "R2_BUCKET ausente"
 
     s3, err = _r2_client_from_env()
     if s3 is None:
-        return None, None, None, err or "cliente R2 indisponível"
+        return None, None, None, None, err or "cliente R2 indisponível"
 
     run_id = str(uuid.uuid4())
 
@@ -96,6 +96,7 @@ def _upload_archive_to_r2(archive_bytes: bytes, lista_meta: dict):
     numero_slug = _safe_slug(numero)
     year = ts.strftime("%Y")
     r2_key = f"{prefix}/{year}/{numero_slug}/{run_id}/archive.zip"
+    r2_key_input_pdf = f"{prefix}/{year}/{numero_slug}/{run_id}/input.pdf"
 
     try:
         # Evitar Metadata com caracteres não ASCII (pode quebrar o upload).
@@ -106,17 +107,23 @@ def _upload_archive_to_r2(archive_bytes: bytes, lista_meta: dict):
             Body=archive_bytes,
             ContentType="application/zip",
         )
+        s3.put_object(
+            Bucket=bucket,
+            Key=r2_key_input_pdf,
+            Body=input_pdf_bytes,
+            ContentType="application/pdf",
+        )
         presigned = s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": bucket, "Key": r2_key},
             ExpiresIn=expires,
         )
-        return run_id, r2_key, presigned, ""
+        return run_id, r2_key, r2_key_input_pdf, presigned, ""
     except Exception as e:
-        return None, None, None, str(e)
+        return None, None, None, None, str(e)
 
 
-def _persist_run_to_neon(run_id: str, r2_key: str, presigned_url: str, archive_sha256: str, archive_size: int, lista_meta: dict, payload: dict):
+def _persist_run_to_neon(run_id: str, r2_key: str, r2_key_input_pdf: str, presigned_url: str, archive_sha256: str, archive_size: int, lista_meta: dict, payload: dict):
     """
     Best-effort. Creates tables if not exist.
     """
@@ -151,13 +158,16 @@ def _persist_run_to_neon(run_id: str, r2_key: str, presigned_url: str, archive_s
                     " lista_id INTEGER NOT NULL REFERENCES listas(id) ON DELETE CASCADE,"
                     " run_number INTEGER NOT NULL,"
                     " saved_at TIMESTAMPTZ DEFAULT NOW(),"
-                    " r2_key_archive_zip TEXT NOT NULL,"
+                    " r2_key_archive_zip TEXT NOT NULL," " r2_key_input_pdf TEXT,"
                     " presigned_get_url TEXT,"
                     " sha256_zip TEXT,"
                     " size_bytes BIGINT,"
                     " payload_json JSONB"
                     ");"
                 )
+
+                # Patch colunas novas
+                cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_input_pdf TEXT;")
 
                 # Upsert lista
                 cur.execute(
@@ -178,8 +188,8 @@ def _persist_run_to_neon(run_id: str, r2_key: str, presigned_url: str, archive_s
                 run_number = int(cur.fetchone()[0] or 0) + 1
 
                 cur.execute(
-                    "INSERT INTO lista_runs (id, lista_id, run_number, r2_key_archive_zip, presigned_get_url, sha256_zip, size_bytes, payload_json)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s);",
+                    "INSERT INTO lista_runs (id, lista_id, run_number, r2_key_archive_zip, r2_key_input_pdf, presigned_get_url, sha256_zip, size_bytes, payload_json)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);",
                     (
                         run_id,
                         lista_id,
@@ -315,7 +325,7 @@ class handler(BaseHTTPRequestHandler):
             archive_err = ""
 
             if os.environ.get("R2_ACCESS_KEY_ID") and os.environ.get("R2_SECRET_ACCESS_KEY") and os.environ.get("R2_BUCKET") and os.environ.get("R2_ENDPOINT"):
-                run_id, r2_key, presigned_url, archive_err = _upload_archive_to_r2(archive_bytes, lista_meta)
+                run_id, r2_key, r2_key_input_pdf, presigned_url, archive_err = _upload_archive_to_r2(archive_bytes, pdf_bytes, lista_meta)
 
                 if run_id and r2_key:
                     db_err = _persist_run_to_neon(
