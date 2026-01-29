@@ -1,50 +1,12 @@
-"use client";
+import React from "react";
+import { doLogin } from "./login-actions";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-
-const AUTH_KEY = "upde_auth_v1";
-const USER = "admin";
-const PASS = "upde@2026";
-
-function isAuthed(): boolean {
-  try {
-    return window.localStorage.getItem(AUTH_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export default function LoginPage() {
-  const router = useRouter();
-
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string>("");
-
-  const canSubmit = useMemo(() => username.trim().length > 0 && password.length > 0, [username, password]);
-
-  useEffect(() => {
-    // Se já estiver autenticado, pula a tela de login.
-    if (isAuthed()) router.replace("/precos");
-  }, [router]);
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-
-    if (username.trim() === USER && password === PASS) {
-      try {
-        window.localStorage.setItem(AUTH_KEY, "1");
-      } catch {
-        // Se o storage falhar, ainda assim tenta navegar (auth guard irá bloquear).
-      }
-      router.replace("/precos");
-      return;
-    }
-
-    setError("Usuário ou senha inválidos.");
-  }
+export default function LoginPage({
+  searchParams,
+}: {
+  searchParams?: { [key: string]: string | string[] | undefined };
+}) {
+  const error = typeof searchParams?.error === "string" ? searchParams?.error : "";
 
   return (
     <main
@@ -80,7 +42,9 @@ export default function LoginPage() {
           }}
         >
           <div>
-            <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0.2 }}>PAINEL DE FERRAMENTAS - UPDE</div>
+            <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0.2 }}>
+              PAINEL DE FERRAMENTAS - UPDE
+            </div>
             <div style={{ marginTop: 4, color: "#4b5563", fontSize: 13 }}>
               Ferramentas utilizadas pela UPDE | HUSM
             </div>
@@ -93,14 +57,13 @@ export default function LoginPage() {
           />
         </div>
 
-        <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
+        <form action={doLogin} style={{ display: "grid", gap: 12 }}>
           <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontWeight: 800, fontSize: 13 }}>Usuário</label>
+            <label style={{ fontWeight: 800, fontSize: 13 }}>Email</label>
             <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              name="email"
               autoComplete="username"
-              placeholder="Digite seu usuário"
+              placeholder="Digite seu email"
               style={{
                 height: 40,
                 borderRadius: 10,
@@ -114,8 +77,7 @@ export default function LoginPage() {
           <div style={{ display: "grid", gap: 6 }}>
             <label style={{ fontWeight: 800, fontSize: 13 }}>Senha</label>
             <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              name="password"
               type="password"
               autoComplete="current-password"
               placeholder="Digite sua senha"
@@ -141,24 +103,23 @@ export default function LoginPage() {
                 fontWeight: 700,
               }}
             >
-              {error}
+              Email ou senha inválidos.
             </div>
           )}
 
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
-            <button
-              type="submit"
-              className={`btn ${canSubmit ? "btnCta" : "btnPrimary"}`}
-              disabled={!canSubmit}
-              title={!canSubmit ? "Preencha usuário e senha" : "Entrar"}
-              style={{ height: 40, minWidth: 140 }}
-            >
+            <button type="submit" className="btn btnCta" style={{ height: 40, minWidth: 140 }}>
               Entrar
             </button>
 
             <div style={{ fontSize: 12, color: "#6b7280" }}>
               Acesso restrito — necessário login para visualizar as aplicações.
             </div>
+          </div>
+
+          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+            Primeiro acesso: defina <b>ADMIN_EMAIL</b> e <b>ADMIN_PASSWORD</b> nas variáveis de ambiente para criar o
+            usuário admin automaticamente.
           </div>
         </form>
       </div>
