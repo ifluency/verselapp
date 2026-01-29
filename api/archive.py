@@ -101,9 +101,17 @@ def _ensure_schema(cur):
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_input_pdf TEXT;")
+
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive_zip TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_size_bytes BIGINT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_sha256 TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS payload_json JSONB;")
+    # Copy forward older column names if they exist (or were added as legacy columns)
+    cur.execute(
+        "UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, NULLIF(r2_key_archive_zip,''), NULLIF(r2_key,''))"
+    )
+
 
     # Legacy columns used by older generate.py versions
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive_zip TEXT;")
@@ -114,11 +122,6 @@ def _ensure_schema(cur):
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_number INTEGER;")
 
     cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS responsavel_atual TEXT;")
-
-
-    # Copy forward older column names if they exist
-    if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
-        cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
     if _column_exists(cur, "lista_runs", "archive_size_byte") and _column_exists(cur, "lista_runs", "archive_size_bytes"):
         cur.execute("UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);")
 
