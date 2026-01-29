@@ -21,10 +21,6 @@ function asString(v: unknown): string {
 }
 
 function synthEmail(loginId: string): string {
-  // Como o schema legado exige email NOT NULL UNIQUE:
-  // - se tiver ADMIN_EMAIL, usa ele
-  // - se loginId for email, usa ele
-  // - senão cria um email sintético estável (evita conflito)
   if (loginId.includes("@")) return loginId.toLowerCase();
   return `${loginId.toLowerCase()}@local.invalid`;
 }
@@ -52,11 +48,9 @@ async function ensureUsersSchema() {
 }
 
 /**
- * Bootstrap do admin:
- * - ADMIN_USERNAME + ADMIN_PASSWORD (recomendado)
- * - ADMIN_EMAIL continua aceito como fallback
- * Regra importante:
- * - Se o email já existir, atualiza o usuário existente para ser admin e/ou define username.
+ * Bootstrap do admin (opcional).
+ * Se você está criando usuário manualmente no Neon e NÃO quer que isso rode,
+ * remova ADMIN_USERNAME/ADMIN_EMAIL/ADMIN_PASSWORD das env vars da Vercel.
  */
 async function ensureBootstrapAdmin() {
   await ensureUsersSchema();
@@ -66,12 +60,12 @@ async function ensureBootstrapAdmin() {
   const pass = process.env.ADMIN_PASSWORD || "";
   const name = (process.env.ADMIN_NAME || "Admin").trim();
 
-  const loginId = usernameEnv || emailEnv; // login preferencial
+  const loginId = usernameEnv || emailEnv;
   if (!loginId || !pass) return;
 
   const hash = await bcrypt.hash(pass, 10);
 
-  // 1) Procura por username/email = loginId
+  // 1) procura por username/email = loginId
   const byLogin = (await sql/* sql */ `
     SELECT id, email, username, name, role, password_hash
     FROM app_users
@@ -81,8 +75,6 @@ async function ensureBootstrapAdmin() {
 
   if (byLogin.length > 0) {
     const u = byLogin[0];
-
-    // garante username, role admin, nome e senha atualizada
     await sql/* sql */ `
       UPDATE app_users
       SET
@@ -95,7 +87,7 @@ async function ensureBootstrapAdmin() {
     return;
   }
 
-  // 2) Se tiver ADMIN_EMAIL, pode existir usuário com esse email (mesmo que loginId seja outro)
+  // 2) se tiver ADMIN_EMAIL e já existir, atualiza
   if (emailEnv) {
     const byEmail = (await sql/* sql */ `
       SELECT id, email, username, name, role, password_hash
@@ -106,7 +98,6 @@ async function ensureBootstrapAdmin() {
 
     if (byEmail.length > 0) {
       const u = byEmail[0];
-
       await sql/* sql */ `
         UPDATE app_users
         SET
@@ -120,7 +111,7 @@ async function ensureBootstrapAdmin() {
     }
   }
 
-  // 3) Não existe: cria novo
+  // 3) cria novo
   const emailToStore = emailEnv ? emailEnv : synthEmail(loginId);
 
   await sql/* sql */ `
@@ -149,41 +140,68 @@ export const {
         password: { label: "Senha", type: "password" },
       },
 
+      // DEBUG: logs no Vercel (Functions Logs)
       async authorize(credentials) {
         const login = asString(credentials?.login).trim().toLowerCase();
         const password = asString(credentials?.password);
 
         if (!login || !password) return null;
 
-        await ensureUsersSchema();
-        await ensureBootstrapAdmin();
-
-        const rows = (await sql/* sql */ `
-          SELECT id, email, username, name, role, password_hash
-          FROM app_users
-          WHERE lower(username) = ${login} OR lower(email) = ${login}
-          LIMIT 1
-        `) as DbUser[];
-
-        const user = rows[0];
-        if (!user) return null;
-
-        const ok = await bcrypt.compare(password, user.password_hash);
-        if (!ok) return null;
-
         try {
-          await sql/* sql */ `UPDATE app_users SET last_login_at = now() WHERE id = ${user.id}`;
-        } catch {
-          // ignore
-        }
+          await ensureUsersSchema();
+          await ensureBootstrapAdmin();
 
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name || user.username || user.email,
-          // @ts-ignore
-          role: user.role,
-        };
+          const rows = (await sql/* sql */ `
+            SELECT id, email, username, name, role, password_hash
+            FROM app_users
+            WHERE lower(trim(username)) = ${login} OR lower(trim(email)) = ${login}
+            LIMIT 1
+          `) as DbUser[];
+
+          if (rows.length === 0) {
+            console.error("AUTH_DEBUG: user_not_found", { login });
+            return null;
+          }
+
+          const user = rows[0];
+          const ok = await bcrypt.compare(password, user.password_hash);
+
+          if (!ok) {
+            console.error("AUTH_DEBUG: bad_password", {
+              login,
+              found_user: { id: user.id, username: user.username, email: user.email },
+            });
+            return null;
+          }
+
+          console.log("AUTH_DEBUG: login_ok", {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+          });
+
+          try {
+            await sql/* sql */ `UPDATE app_users SET last_login_at = now() WHERE id = ${user.id}`;
+          } catch {
+            // ignore
+          }
+
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name || user.username || user.email,
+            // @ts-ignore
+            role: user.role,
+          };
+        } catch (e: any) {
+          console.error("AUTH_DEBUG: exception", {
+            login,
+            message: e?.message,
+            cause: e?.cause,
+          });
+          return null;
+        }
       },
     }),
   ],
