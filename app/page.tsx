@@ -1,6 +1,6 @@
 // app/page.tsx
 import React from "react";
-import { doLogin } from "./login-actions";
+import { doLogin, doQuickLogin } from "./login-actions";
 import PasswordInput from "./components/PasswordInput";
 
 export default function LoginPage({
@@ -89,7 +89,39 @@ export default function LoginPage({
             />
           </div>
 
-          {error && (
+          {error === "quick_login_disabled" && (
+            <div
+              style={{
+                border: "1px solid #fde68a",
+                background: "#fffbeb",
+                color: "#92400e",
+                borderRadius: 10,
+                padding: "10px 12px",
+                fontSize: 13,
+                fontWeight: 700,
+              }}
+            >
+              Login rápido desativado. Configure ALLOW_QUICK_LOGIN=true (somente em Preview/Dev).
+            </div>
+          )}
+
+          {error === "missing_admin_env" && (
+            <div
+              style={{
+                border: "1px solid #fecaca",
+                background: "#fef2f2",
+                color: "#991b1b",
+                borderRadius: 10,
+                padding: "10px 12px",
+                fontSize: 13,
+                fontWeight: 700,
+              }}
+            >
+              ADMIN_USERNAME/ADMIN_EMAIL e ADMIN_PASSWORD não estão definidos.
+            </div>
+          )}
+
+          {error && error !== "quick_login_disabled" && error !== "missing_admin_env" && (
             <div
               style={{
                 border: "1px solid #fecaca",
@@ -110,14 +142,24 @@ export default function LoginPage({
               Entrar
             </button>
 
+            {/* Botão de login rápido (autentica de verdade) */}
+            <button
+              type="submit"
+              formAction={doQuickLogin}
+              className="btn"
+              style={{ height: 40, minWidth: 160 }}
+              title="Login rápido (somente Preview/Dev)"
+            >
+              Entrar rápido
+            </button>
+
             <div style={{ fontSize: 12, color: "#6b7280" }}>
               Acesso restrito — necessário login para visualizar as aplicações.
             </div>
           </div>
 
           <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-            Primeiro acesso: defina <b>ADMIN_USERNAME</b> e <b>ADMIN_PASSWORD</b> nas variáveis de ambiente para criar o
-            usuário admin automaticamente.
+            Para habilitar “Entrar rápido” em Preview/Dev: defina <b>ALLOW_QUICK_LOGIN=true</b>.
           </div>
         </form>
       </div>
