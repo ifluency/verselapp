@@ -131,16 +131,6 @@ const LAST_LIC_LINE_STYLE: React.CSSProperties = {
 };
 
 
-
-async function readJsonSafe(res: Response): Promise<{ ok: boolean; data: any; text: string; status: number; contentType: string }>{
-  const status = res.status;
-  const contentType = res.headers.get("content-type") || "";
-  const text = await res.text();
-  if (contentType.includes("application/json")) {
-    try { return { ok: res.ok, data: JSON.parse(text), text, status, contentType }; } catch { return { ok: res.ok, data: null, text, status, contentType }; }
-  }
-  return { ok: res.ok, data: null, text, status, contentType };
-}
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>("");
@@ -508,10 +498,9 @@ async function startEditFromRun(runId: string) {
 
   try {
     const res = await fetch(`/api/archive?action=load&run_id=${encodeURIComponent(rid)}`);
-    const jr = await readJsonSafe(res);
-    const data = jr.data;
+    const data = await res.json();
     if (!res.ok) {
-      setStatus(data?.error ? `Falha ao carregar run: ${String(data.error)}` : `Falha ao carregar run (HTTP ${jr.status}). ${jr.text ? jr.text.slice(0,180) : ""}`);
+      setStatus(data?.error ? `Falha ao carregar run: ${String(data.error)}` : "Falha ao carregar run.");
       setIsHydratingEdit(false);
       hydratingEditRef.current = false;
       return;
