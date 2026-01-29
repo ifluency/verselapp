@@ -1,19 +1,12 @@
 "use client";
 
 import React from "react";
-import { useRouter } from "next/navigation";
-import { AUTH_KEY } from "./AuthGuard";
+import { signOut } from "next-auth/react";
 
 export default function Header() {
-  const router = useRouter();
-
   function logout() {
-    try {
-      window.localStorage.removeItem(AUTH_KEY);
-    } catch {
-      // ignore
-    }
-    router.replace("/");
+    // callbackUrl garante retorno para a tela de login
+    signOut({ callbackUrl: "/" });
   }
 
   return (
