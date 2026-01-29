@@ -1,5 +1,7 @@
+// app/page.tsx
 import React from "react";
 import { doLogin } from "./login-actions";
+import PasswordInput from "./components/PasswordInput";
 
 export default function LoginPage({
   searchParams,
@@ -7,6 +9,15 @@ export default function LoginPage({
   searchParams?: { [key: string]: string | string[] | undefined };
 }) {
   const error = typeof searchParams?.error === "string" ? searchParams?.error : "";
+
+  const inputStyle: React.CSSProperties = {
+    height: 40,
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    padding: "0 12px",
+    fontSize: 14,
+    width: "100%",
+  };
 
   return (
     <main
@@ -59,35 +70,22 @@ export default function LoginPage({
 
         <form action={doLogin} style={{ display: "grid", gap: 12 }}>
           <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontWeight: 800, fontSize: 13 }}>Email</label>
+            <label style={{ fontWeight: 800, fontSize: 13 }}>Usuário</label>
             <input
-              name="email"
+              name="login"
               autoComplete="username"
-              placeholder="Digite seu email"
-              style={{
-                height: 40,
-                borderRadius: 10,
-                border: "1px solid #cbd5e1",
-                padding: "0 12px",
-                fontSize: 14,
-              }}
+              placeholder="Digite seu usuário"
+              style={inputStyle}
             />
           </div>
 
           <div style={{ display: "grid", gap: 6 }}>
             <label style={{ fontWeight: 800, fontSize: 13 }}>Senha</label>
-            <input
+            <PasswordInput
               name="password"
-              type="password"
               autoComplete="current-password"
               placeholder="Digite sua senha"
-              style={{
-                height: 40,
-                borderRadius: 10,
-                border: "1px solid #cbd5e1",
-                padding: "0 12px",
-                fontSize: 14,
-              }}
+              inputStyle={inputStyle}
             />
           </div>
 
@@ -103,7 +101,7 @@ export default function LoginPage({
                 fontWeight: 700,
               }}
             >
-              Email ou senha inválidos.
+              Usuário ou senha inválidos.
             </div>
           )}
 
@@ -118,7 +116,7 @@ export default function LoginPage({
           </div>
 
           <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-            Primeiro acesso: defina <b>ADMIN_EMAIL</b> e <b>ADMIN_PASSWORD</b> nas variáveis de ambiente para criar o
+            Primeiro acesso: defina <b>ADMIN_USERNAME</b> e <b>ADMIN_PASSWORD</b> nas variáveis de ambiente para criar o
             usuário admin automaticamente.
           </div>
         </form>
