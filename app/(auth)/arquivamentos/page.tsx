@@ -11,8 +11,6 @@ type Row = {
   ultima_edicao_em: string | null;
   latest_run_id: string | null;
   tamanho_bytes: number | null;
-  r2_key_archive: string | null;
-  r2_key_input_pdf: string | null;
 };
 
 function fmtDate(s?: string | null) {
@@ -34,24 +32,6 @@ function fmtBytes(n?: number | null) {
   return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
 }
 
-async function readJsonSafe(res: Response) {
-  const ct = res.headers.get("content-type") || "";
-  const text = await res.text();
-
-  // Try JSON first (even if content-type is wrong)
-  try {
-    return { ok: true as const, data: JSON.parse(text) as any, raw: text, contentType: ct };
-  } catch {
-    const snippet = text.slice(0, 260).replace(/\s+/g, " ").trim();
-    return {
-      ok: false as const,
-      error: `Endpoint ${res.url} não retornou JSON. HTTP ${res.status} ${res.statusText}. content-type="${ct}". Início da resposta: ${snippet}`,
-      raw: text,
-      contentType: ct,
-    };
-  }
-}
-
 function IconDownload() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
@@ -70,7 +50,13 @@ function IconDownload() {
 function IconPencil() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 20h9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M12 20h9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
       <path
         d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5z"
         fill="none"
@@ -82,17 +68,28 @@ function IconPencil() {
   );
 }
 
+
+async function readJsonSafe(res: Response): Promise<{ ok: boolean; data: any; text: string; status: number; contentType: string }>{
+  const status = res.status;
+  const contentType = res.headers.get("content-type") || "";
+  const text = await res.text();
+  if (contentType.includes("application/json")) {
+    try { return { ok: res.ok, data: JSON.parse(text), text, status, contentType }; } catch { return { ok: res.ok, data: null, text, status, contentType }; }
+  }
+  return { ok: res.ok, data: null, text, status, contentType };
+}
+
 function IconTrash() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 6h18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M8 6V4h8v2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M6 6l1 16h10l1-16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path d="M3 6h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      <path d="M8 6V4h8v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      <path d="M6 6l1 16h10l1-16" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      <path d="M10 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      <path d="M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
     </svg>
   );
 }
-
 export default function ArquivamentosPage() {
   const [items, setItems] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
@@ -105,12 +102,8 @@ export default function ArquivamentosPage() {
     try {
       const qs = filtroLista ? `&lista=${encodeURIComponent(filtroLista)}` : "";
       const res = await fetch(`/api/archive?action=runs${qs}`);
-      const parsed = await readJsonSafe(res);
-      if (!parsed.ok) {
-        setStatus(parsed.error);
-        return;
-      }
-      const data = parsed.data;
+      const jr = await readJsonSafe(res);
+      const data = jr.data;
       if (!res.ok) {
         setStatus(data?.error ? String(data.error) : "Falha ao carregar.");
         return;
@@ -137,14 +130,10 @@ export default function ArquivamentosPage() {
     setStatus("Gerando link de download...");
     try {
       const res = await fetch(`/api/archive?action=presign&run_id=${encodeURIComponent(runId)}`);
-      const parsed = await readJsonSafe(res);
-      if (!parsed.ok) {
-        setStatus(parsed.error);
-        return;
-      }
-      const data = parsed.data;
+      const jr = await readJsonSafe(res);
+      const data = jr.data;
       if (!res.ok) {
-        setStatus(data?.error ? String(data.error) : "Falha ao presign.");
+        setStatus(data?.error ? String(data.error) : `Falha ao presign (HTTP ${jr.status}). ${jr.text ? jr.text.slice(0,180) : ""}`);
         return;
       }
       const url = data.url as string;
@@ -161,31 +150,28 @@ export default function ArquivamentosPage() {
     window.location.href = `/precos?edit_run_id=${encodeURIComponent(runId)}`;
   }
 
+  
   async function deleteRun(runId: string) {
-    const ok = window.confirm("Deseja mesmo APAGAR este arquivamento? Esta ação não pode ser desfeita.");
+    const ok = window.confirm("Deseja mesmo apagar este arquivamento? Esta ação não pode ser desfeita.");
     if (!ok) return;
 
     setStatus("Apagando arquivamento...");
     try {
       const res = await fetch(`/api/archive?action=delete&run_id=${encodeURIComponent(runId)}`, { method: "POST" });
-      const parsed = await readJsonSafe(res);
-      if (!parsed.ok) {
-        setStatus(parsed.error);
-        return;
-      }
-      const data = parsed.data;
+      const jr = await readJsonSafe(res);
+      const data = jr.data;
       if (!res.ok) {
-        setStatus(data?.error ? String(data.error) : "Falha ao apagar.");
+        setStatus(data?.error ? String(data.error) : `Falha ao apagar (HTTP ${jr.status}). ${jr.text ? jr.text.slice(0,180) : ""}`);
         return;
       }
       setStatus("Arquivamento apagado.");
       await load();
     } catch (e: any) {
-      setStatus(String(e));
+      setStatus(`Falha ao apagar: ${String(e?.message || e)}`);
     }
   }
 
-  return (
+return (
     <main style={{ maxWidth: "100%", margin: "12px auto", padding: "0 12px" }}>
       <h1 style={{ marginBottom: 8 }}>Arquivamentos</h1>
 
@@ -201,7 +187,7 @@ export default function ArquivamentosPage() {
         </button>
       </div>
 
-      {status && <p style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{status}</p>}
+      {status && <p style={{ marginTop: 10 }}>{status}</p>}
 
       <div style={{ marginTop: 12, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", fontSize: 14 }}>
@@ -222,7 +208,7 @@ export default function ArquivamentosPage() {
                   key={h}
                   style={{
                     border: "1px solid #ddd",
-                    padding: "8px 8px",
+                    padding: "10px 8px",
                     background: "#f7f7f7",
                     textAlign: "left",
                     fontWeight: 800,
@@ -236,38 +222,34 @@ export default function ArquivamentosPage() {
           <tbody>
             {rows.map((r, idx) => {
               const runId = r.latest_run_id || "";
-              const hasArchive = Boolean((r.r2_key_archive || "").trim());
-              const canEdit = hasArchive || Boolean((r.r2_key_input_pdf || "").trim());
-
               return (
                 <tr key={`${r.numero_lista}-${idx}`} style={{ background: idx % 2 === 0 ? "#fff" : "#f4f4f4" }}>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.numero_lista}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.nome_lista || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.responsavel || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.processo_sei || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtDate(r.salvo_em)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtDate(r.ultima_edicao_em)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtBytes(r.tamanho_bytes)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.numero_lista}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.nome_lista || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.responsavel || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.processo_sei || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtDate(r.salvo_em)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtDate(r.ultima_edicao_em)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtBytes(r.tamanho_bytes)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                       <button
-                        title={hasArchive ? "Baixar .zip" : "Sem arquivo arquivado no R2"}
+                        title="Baixar .zip"
                         onClick={() => runId && presignAndDownload(runId)}
-                        disabled={!runId || !hasArchive}
+                        disabled={!runId}
                         style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
                       >
                         <IconDownload />
                       </button>
 
                       <button
-                        title={canEdit ? "Editar cotação" : "Sem arquivos no R2 para reabrir"}
+                        title="Editar cotação"
                         onClick={() => runId && editRun(runId)}
-                        disabled={!runId || !canEdit}
+                        disabled={!runId}
                         style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
                       >
                         <IconPencil />
                       </button>
-
                       <button
                         title="Apagar arquivamento"
                         onClick={() => runId && deleteRun(runId)}
@@ -276,6 +258,7 @@ export default function ArquivamentosPage() {
                       >
                         <IconTrash />
                       </button>
+
                     </div>
                   </td>
                 </tr>
