@@ -2,6 +2,22 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
+
+
+async function readJsonSafe(res: Response): Promise<{ ok: boolean; data: any; rawText?: string }> {
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    try {
+      const parsed = await readJsonSafe(res);
+    const data = parsed.ok ? parsed.data : null;
+      return { ok: true, data };
+    } catch (e) {
+      // fallback
+    }
+  }
+  const rawText = await res.text();
+  return { ok: false, data: null, rawText };
+}
 type PreviewItem = {
   item: string;
   catmat: string;
@@ -431,7 +447,8 @@ useEffect(() => {
       });
       if (!res.ok) return;
 
-      const data = await res.json();
+      const parsed = await readJsonSafe(res);
+    const data = parsed.ok ? parsed.data : null;
       const byCatmat: Record<string, PncpUltimoInfo> = data?.by_catmat || {};
 
       const byItem: Record<string, PncpUltimoInfo> = {};
@@ -465,12 +482,13 @@ useEffect(() => {
     setPncpHistLoading(true);
     try {
       const res = await fetch(`/api/catmat_historico?catmat=${encodeURIComponent(c)}`);
-      if (!res.ok) {
+      if (!res.ok || !data) {
         const msg = await res.text();
         setPncpHistError(msg || "Falha ao consultar histórico.");
         return;
       }
-      const data = await res.json();
+      const parsed = await readJsonSafe(res);
+    const data = parsed.ok ? parsed.data : null;
       setPncpHistRows((data.rows || []) as PncpHistoricoRow[]);
     } catch (e: any) {
       setPncpHistError(String(e));
@@ -498,9 +516,10 @@ async function startEditFromRun(runId: string) {
 
   try {
     const res = await fetch(`/api/archive?action=load&run_id=${encodeURIComponent(rid)}`);
-    const data = await res.json();
-    if (!res.ok) {
-      setStatus(data?.error ? `Falha ao carregar run: ${String(data.error)}` : "Falha ao carregar run.");
+    const parsed = await readJsonSafe(res);
+    const data = parsed.ok ? parsed.data : null;
+    if (!res.ok || !data) {
+      setStatus((data && data.error) ? `Falha ao carregar run: ${String(data.error)}` : (parsed.rawText ? `Falha ao carregar run: endpoint não retornou JSON. Resposta: ${String(parsed.rawText).slice(0,120)}...` : "Falha ao carregar run."));
       setIsHydratingEdit(false);
       hydratingEditRef.current = false;
       return;
@@ -560,12 +579,13 @@ async function loadPreview() {
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/preview", { method: "POST", body: form });
-      if (!res.ok) {
+      if (!res.ok || !data) {
         const msg = await res.text();
         setStatus(`Falha ao gerar prévia: ${msg}`);
         return;
       }
-      const data = await res.json();
+      const parsed = await readJsonSafe(res);
+    const data = parsed.ok ? parsed.data : null;
       const items = (data.items || []) as PreviewItem[];
       setPreview(items);
       // Consulta Neon (PNCP) para preencher automaticamente o "Último licitado" e mostrar contexto.
@@ -634,7 +654,7 @@ async function loadPreview() {
       form.append("payload", JSON.stringify(payload));
 
       const res = await fetch("/api/generate", { method: "POST", body: form });
-      if (!res.ok) {
+      if (!res.ok || !data) {
         const msg = await res.text();
         setStatus(`Falha ao processar: ${msg}`);
         return;
@@ -1590,7 +1610,7 @@ async function loadPreview() {
                 const form = new FormData();
                 form.append("file", file);
                 const res = await fetch("/api/debug", { method: "POST", body: form });
-                if (!res.ok) {
+                if (!res.ok || !data) {
                   const msg = await res.text();
                   setStatus(`Falha ao gerar debug: ${msg}`);
                   return;
