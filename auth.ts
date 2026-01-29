@@ -8,6 +8,7 @@ import crypto from "crypto";
 type DbUser = {
   id: string;
   email: string;
+  username: string | null;
   name: string | null;
   role: string;
   password_hash: string;
@@ -15,14 +16,14 @@ type DbUser = {
 
 const sql = neon(process.env.DATABASE_URL || "");
 
-/**
- * Tabela simples de usuários (fora do schema do NextAuth).
- * - Mantém compatibilidade com Neon (Postgres)
- * - Evita precisar de Adapter/Prisma
- */
+function asString(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
 async function ensureUsersSchema() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL não configurada.");
 
+  // Mantém o schema antigo (email) e adiciona username para login por "nome"
   await sql/* sql */ `
     CREATE TABLE IF NOT EXISTS app_users (
       id text PRIMARY KEY,
@@ -34,42 +35,51 @@ async function ensureUsersSchema() {
       last_login_at timestamptz
     )
   `;
+
+  // Migração leve: username
+  await sql/* sql */ `ALTER TABLE app_users ADD COLUMN IF NOT EXISTS username text`;
+  await sql/* sql */ `UPDATE app_users SET username = email WHERE username IS NULL`;
+
+  // Índices
   await sql/* sql */ `CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users (email)`;
+  await sql/* sql */ `CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_username_lower ON app_users (lower(username))`;
 }
 
 /**
- * Bootstrap de um admin via env vars (primeiro setup).
- * Defina:
- *  - ADMIN_EMAIL
- *  - ADMIN_PASSWORD
- * Opcional:
- *  - ADMIN_NAME
+ * Bootstrap do admin:
+ * - ADMIN_USERNAME (novo) + ADMIN_PASSWORD
+ * - ADMIN_EMAIL continua aceito como fallback
+ * - ADMIN_NAME opcional
  */
 async function ensureBootstrapAdmin() {
-  const email = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+  await ensureUsersSchema();
+
+  const username = (process.env.ADMIN_USERNAME || "").trim().toLowerCase();
+  const emailEnv = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
   const pass = process.env.ADMIN_PASSWORD || "";
   const name = (process.env.ADMIN_NAME || "Admin").trim();
 
-  if (!email || !pass) return;
+  const loginId = username || emailEnv; // aceita ambos
+  if (!loginId || !pass) return;
 
   const rows = (await sql/* sql */ `
-    SELECT id, email, name, role, password_hash
+    SELECT id, email, username, name, role, password_hash
     FROM app_users
-    WHERE lower(email) = ${email}
+    WHERE lower(username) = ${loginId} OR lower(email) = ${loginId}
     LIMIT 1
   `) as DbUser[];
 
   if (rows.length > 0) return;
 
   const hash = await bcrypt.hash(pass, 10);
-  await sql/* sql */ `
-    INSERT INTO app_users (id, email, name, role, password_hash)
-    VALUES (${crypto.randomUUID()}, ${email}, ${name}, 'admin', ${hash})
-  `;
-}
 
-function asString(v: unknown): string {
-  return typeof v === "string" ? v : "";
+  // email é obrigatório no schema legado; usamos emailEnv se existir, senão repetimos loginId
+  const emailToStore = (emailEnv || loginId).toLowerCase();
+
+  await sql/* sql */ `
+    INSERT INTO app_users (id, email, username, name, role, password_hash)
+    VALUES (${crypto.randomUUID()}, ${emailToStore}, ${loginId}, ${name}, 'admin', ${hash})
+  `;
 }
 
 export const {
@@ -78,93 +88,34 @@ export const {
   signIn,
   signOut,
 } = NextAuth({
-  // jwt (sem adapter) -> middleware não precisa bater no DB
   session: { strategy: "jwt" },
 
   pages: {
-    signIn: "/", // nossa página de login é a home
+    signIn: "/",
   },
 
   providers: [
     Credentials({
       name: "Credenciais",
       credentials: {
-        email: { label: "Email", type: "text", placeholder: "seu@email" },
+        login: { label: "Usuário", type: "text", placeholder: "seu usuário" },
         password: { label: "Senha", type: "password" },
       },
       async authorize(credentials) {
-        const email = asString(credentials?.email).trim().toLowerCase();
+        const login = asString(credentials?.login).trim().toLowerCase();
         const password = asString(credentials?.password);
 
-        if (!email || !password) return null;
+        if (!login || !password) return null;
 
         await ensureUsersSchema();
         await ensureBootstrapAdmin();
 
         const rows = (await sql/* sql */ `
-          SELECT id, email, name, role, password_hash
+          SELECT id, email, username, name, role, password_hash
           FROM app_users
-          WHERE lower(email) = ${email}
+          WHERE lower(username) = ${login} OR lower(email) = ${login}
           LIMIT 1
         `) as DbUser[];
 
         const user = rows[0];
-        if (!user) return null;
-
-        const ok = await bcrypt.compare(password, user.password_hash);
-        if (!ok) return null;
-
-        // atualiza last_login_at (best-effort)
-        try {
-          await sql/* sql */ `UPDATE app_users SET last_login_at = now() WHERE id = ${user.id}`;
-        } catch {
-          // ignore
-        }
-
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name || user.email,
-          // @ts-ignore
-          role: user.role,
-        };
-      },
-    }),
-  ],
-
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.id = (user as any).id;
-        token.role = (user as any).role || "user";
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        // @ts-ignore
-        session.user.id = token.id;
-        // @ts-ignore
-        session.user.role = token.role;
-      }
-      return session;
-    },
-
-    /**
-     * Protege rotas via middleware.
-     * Mantém "/" e "/api/auth/*" públicos; demais precisam de sessão.
-     */
-    authorized({ auth, request }) {
-      const { pathname } = request.nextUrl;
-
-      if (pathname === "/") return true;
-      if (pathname.startsWith("/api/auth")) return true;
-
-      // Next internals
-      if (pathname.startsWith("/_next")) return true;
-      if (pathname === "/favicon.ico") return true;
-
-      return !!auth?.user;
-    },
-  },
-});
+        if (
