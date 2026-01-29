@@ -22,6 +22,16 @@ def _send_json(h: BaseHTTPRequestHandler, status: int, payload: dict):
     h.wfile.write(data)
 
 
+def _send_bytes(h: BaseHTTPRequestHandler, status: int, content: bytes, content_type: str, filename: str | None = None):
+    h.send_response(status)
+    h.send_header("Content-Type", content_type)
+    h.send_header("Content-Length", str(len(content)))
+    if filename:
+        h.send_header("Content-Disposition", f'inline; filename="{filename}"')
+    h.end_headers()
+    h.wfile.write(content)
+
+
 def _db_conn():
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -101,27 +111,13 @@ def _ensure_schema(cur):
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_input_pdf TEXT;")
-
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive_zip TEXT;")
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_size_bytes BIGINT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_sha256 TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS payload_json JSONB;")
-    # Copy forward older column names if they exist (or were added as legacy columns)
-    cur.execute(
-        "UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, NULLIF(r2_key_archive_zip,''), NULLIF(r2_key,''))"
-    )
 
-
-    # Legacy columns used by older generate.py versions
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive_zip TEXT;")
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS presigned_get_url TEXT;")
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS sha256_zip TEXT;")
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS size_bytes BIGINT;")
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ DEFAULT NOW();")
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_number INTEGER;")
-
-    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS responsavel_atual TEXT;")
+    # Copy forward older column names if they exist
+    if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
+        cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
     if _column_exists(cur, "lista_runs", "archive_size_byte") and _column_exists(cur, "lista_runs", "archive_size_bytes"):
         cur.execute("UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);")
 
@@ -158,11 +154,11 @@ def _action_runs(cur, filtro_lista: str):
             l.updated_at AS ultima_edicao_em,
             COALESCE(r.run_id::text, r.id::text) AS latest_run_id,
             COALESCE(r.archive_size_bytes, 0) AS tamanho_bytes,
-            COALESCE(r.r2_key_archive, r.r2_key_archive_zip, r.r2_key, '') AS r2_key_archive,
+            COALESCE(r.r2_key_archive, '') AS r2_key_archive,
             COALESCE(r.r2_key_input_pdf, '') AS r2_key_input_pdf
         FROM listas l
         LEFT JOIN LATERAL (
-            SELECT id, run_id, archive_size_bytes, r2_key_archive, r2_key_input_pdf, r2_key_archive_zip, r2_key
+            SELECT id, run_id, archive_size_bytes, r2_key_archive, r2_key_input_pdf
             FROM lista_runs
             WHERE lista_id = l.id
             ORDER BY created_at DESC NULLS LAST, id DESC
@@ -190,7 +186,7 @@ def _action_presign(conn, run_id_or_id: str):
 
         cur.execute(
             """
-            SELECT COALESCE(r2_key_archive, r2_key_archive_zip, r2_key) AS r2_key_archive
+            SELECT r2_key_archive
             FROM lista_runs
             WHERE (run_id::text = %s) OR (id::text = %s)
             ORDER BY created_at DESC NULLS LAST, id DESC
@@ -232,8 +228,6 @@ def _action_load(conn, run_id_or_id: str):
                 r.run_id,
                 r.created_at,
                 r.r2_key_archive,
-                r.r2_key_archive_zip,
-                r.r2_key,
                 r.r2_key_input_pdf,
                 r.payload_json,
                 l.numero_lista,
@@ -254,7 +248,7 @@ def _action_load(conn, run_id_or_id: str):
         if not row:
             return 404, {"error": "run_id não encontrado"}
 
-        r2_key_archive = (row.get("r2_key_archive") or row.get("r2_key_archive_zip") or row.get("r2_key") or "").strip()
+        r2_key_archive = (row.get("r2_key_archive") or "").strip()
         r2_key_input = (row.get("r2_key_input_pdf") or "").strip()
 
         # Legacy/failed runs saved without R2
@@ -264,13 +258,37 @@ def _action_load(conn, run_id_or_id: str):
                 "hint": "Este run foi salvo sem upload no R2 (ou falhou). Apague este run no histórico ou gere novamente a cotação para criar um novo arquivamento.",
                 "run_id": str(row.get("run_id") or row.get("id")),
             }
-        # Se não existe input.pdf arquivado, não tente reconstruir (pode causar timeout/Failed to fetch).
-        # Para edição 100% automática, o input.pdf deve ser salvo no R2 no momento do arquivamento.
-        if not r2_key_input:
-            return 409, {
-                "error": "Run não possui r2_key_input_pdf",
-                "hint": "Este arquivamento não tem o PDF original salvo no R2. Gere e arquive novamente com a versão atual para habilitar edição automática.",
-            }
+
+        # If input.pdf is missing but archive.zip exists, recover it from the zip and upload
+        if not r2_key_input and r2_key_archive:
+            bio = io.BytesIO()
+            s3.download_fileobj(bucket, r2_key_archive, bio)
+            bio.seek(0)
+
+            with zipfile.ZipFile(bio, "r") as zf:
+                candidates = [n for n in zf.namelist() if n.lower().endswith("input.pdf")]
+                if not candidates:
+                    pdfs = [n for n in zf.namelist() if n.lower().endswith(".pdf")]
+                    if not pdfs:
+                        return 500, {"error": "archive.zip não contém PDFs"}
+                    candidates = [pdfs[0]]
+                input_name = candidates[0]
+                input_bytes = zf.read(input_name)
+
+            base_prefix = r2_key_archive.rsplit("/", 1)[0]
+            r2_key_input = f"{base_prefix}/input.pdf"
+
+            s3.put_object(
+                Bucket=bucket,
+                Key=r2_key_input,
+                Body=input_bytes,
+                ContentType="application/pdf",
+            )
+
+            cur.execute(
+                "UPDATE lista_runs SET r2_key_input_pdf = %s WHERE id = %s",
+                (r2_key_input, row.get("id")),
+            )
 
         input_url = s3.generate_presigned_url(
             "get_object",
@@ -337,6 +355,44 @@ def _action_delete(conn, run_id_or_id: str):
     return 200, {"ok": True, "deleted_objects": deleted_objects}
 
 
+
+
+def _action_input_pdf(conn, run_id_or_id: str):
+    """Proxy do input.pdf pelo nosso domínio (evita CORS em presigned URL)."""
+    s3 = _r2_client()
+    if s3 is None:
+        return (500, {"error": "R2 env vars não configuradas"}, None)
+    bucket = os.environ.get("R2_BUCKET")
+    if not bucket:
+        return (500, {"error": "R2_BUCKET não configurada"}, None)
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        _ensure_schema(cur)
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(r2_key_input_pdf,''), '') AS r2_key_input_pdf
+            FROM lista_runs
+            WHERE (run_id::text = %s) OR (id::text = %s)
+            ORDER BY created_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            """,
+            (run_id_or_id, run_id_or_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return (404, {"error": "run_id não encontrado"}, None)
+
+        key = (row.get("r2_key_input_pdf") or "").strip()
+        if not key:
+            return (409, {"error": "Run não possui r2_key_input_pdf. Re-arquive para habilitar edição automática."}, None)
+
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        body = obj["Body"].read()
+        return (200, None, body)
+    except Exception as e:
+        return (500, {"error": f"Falha ao buscar input.pdf no R2: {str(e)}"}, None)
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
@@ -371,7 +427,17 @@ class handler(BaseHTTPRequestHandler):
                     status, payload = _action_load(conn, run_id)
                 return _send_json(self, status, payload)
 
-            return _send_json(self, 400, {"error": "action inválida. Use: runs | presign | load"})
+            
+            if action == "input":
+                run_id = (q.get("run_id", [""])[0] or "").strip()
+                if not run_id:
+                    return _send_json(self, 400, {"error": "run_id é obrigatório"})
+                with conn:
+                    status, payload, body = _action_input_pdf(conn, run_id)
+                if status == 200 and body is not None:
+                    return _send_bytes(self, 200, body, "application/pdf", "input.pdf")
+                return _send_json(self, status, payload or {"error": "Falha ao obter input.pdf"})
+return _send_json(self, 400, {"error": "action inválida. Use: runs | presign | load | input"})
 
         except Exception as e:
             return _send_json(self, 500, {"error": str(e), "trace": traceback.format_exc()})
