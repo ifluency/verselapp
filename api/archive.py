@@ -154,7 +154,7 @@ def _action_runs(cur, filtro_lista: str):
             l.created_at AS salvo_em,
             l.updated_at AS ultima_edicao_em,
             COALESCE(r.run_id::text, r.id::text) AS latest_run_id,
-            COALESCE(r.archive_size_bytes, r.size_bytes, 0) AS tamanho_bytes,
+            COALESCE(r.archive_size_bytes, 0) AS tamanho_bytes,
             COALESCE(r.r2_key_archive, r.r2_key_archive_zip, r.r2_key, '') AS r2_key_archive,
             COALESCE(r.r2_key_input_pdf, '') AS r2_key_input_pdf
         FROM listas l
