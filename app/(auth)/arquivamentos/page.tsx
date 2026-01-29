@@ -78,7 +78,7 @@ export default function ArquivamentosPage() {
     setLoading(true);
     setStatus("");
     try {
-      const qs = filtroLista ? `?lista=${encodeURIComponent(filtroLista)}` : "";
+      const qs = filtroLista ? `&lista=${encodeURIComponent(filtroLista)}` : "";
       const res = await fetch(`/api/archive?action=runs${qs}`);
       const data = await res.json();
       if (!res.ok) {
@@ -106,7 +106,7 @@ export default function ArquivamentosPage() {
 
     setStatus("Gerando link de download...");
     try {
-      const res = await fetch(`/api/archive?action=presign?run_id=${encodeURIComponent(runId)}`);
+      const res = await fetch(`/api/archive?action=presign&run_id=${encodeURIComponent(runId)}`);
       const data = await res.json();
       if (!res.ok) {
         setStatus(data?.error ? String(data.error) : "Falha ao presign.");
