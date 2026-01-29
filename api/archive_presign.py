@@ -43,6 +43,19 @@ def _db_conn():
     return psycopg2.connect(dsn, sslmode="require")
 
 
+def _column_exists(cur, table: str, column: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=%s AND column_name=%s
+        LIMIT 1
+        """,
+        (table, column),
+    )
+    return cur.fetchone() is not None
+
+
 def _ensure_schema(cur):
     cur.execute(
         """
@@ -51,7 +64,9 @@ def _ensure_schema(cur):
             numero_lista TEXT UNIQUE NOT NULL,
             nome_lista TEXT,
             responsavel TEXT,
-            processo_sei TEXT
+            processo_sei TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
     )
@@ -60,7 +75,8 @@ def _ensure_schema(cur):
         CREATE TABLE IF NOT EXISTS lista_runs (
             id BIGSERIAL PRIMARY KEY,
             lista_id BIGINT REFERENCES listas(id) ON DELETE CASCADE,
-            run_id UUID UNIQUE NOT NULL,
+            run_id UUID,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             r2_key_archive TEXT,
             r2_key_input_pdf TEXT,
             archive_size_bytes BIGINT,
@@ -69,18 +85,39 @@ def _ensure_schema(cur):
         );
         """
     )
-    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
-    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+
+    # Patch legacy schemas
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_id UUID;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_size_bytes BIGINT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_lista_runs_lista_id_created ON lista_runs (lista_id, created_at DESC);")
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+
+    if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
+        cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
+    if _column_exists(cur, "lista_runs", "archive_size_byte") and _column_exists(cur, "lista_runs", "archive_size_bytes"):
+        cur.execute("UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);")
+
+    try:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        cur.execute("UPDATE lista_runs SET run_id = gen_random_uuid() WHERE run_id IS NULL;")
+    except Exception:
+        try:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+            cur.execute("UPDATE lista_runs SET run_id = uuid_generate_v4() WHERE run_id IS NULL;")
+        except Exception:
+            pass
+
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_runs_run_id ON lista_runs (run_id) WHERE run_id IS NOT NULL;")
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             q = parse_qs(urlparse(self.path).query)
-            run_id = (q.get("run_id", [""])[0] or "").strip()
-            if not run_id:
+            run_id_or_id = (q.get("run_id", [""])[0] or "").strip()
+            if not run_id_or_id:
                 return _send_json(self, 400, {"error": "run_id é obrigatório"})
 
             conn = _db_conn()
@@ -98,9 +135,16 @@ class handler(BaseHTTPRequestHandler):
             with conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     _ensure_schema(cur)
+
                     cur.execute(
-                        "SELECT r2_key_archive FROM lista_runs WHERE run_id = %s LIMIT 1",
-                        (run_id,),
+                        """
+                        SELECT r2_key_archive
+                        FROM lista_runs
+                        WHERE (run_id::text = %s) OR (id::text = %s)
+                        ORDER BY created_at DESC NULLS LAST, id DESC
+                        LIMIT 1
+                        """,
+                        (run_id_or_id, run_id_or_id),
                     )
                     row = cur.fetchone()
                     if not row:
