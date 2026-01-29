@@ -96,8 +96,6 @@ def _ensure_schema(cur):
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_input_pdf TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS payload_json JSONB;")
-    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
-    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
 
     if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
         cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
@@ -106,11 +104,7 @@ def _ensure_schema(cur):
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         cur.execute("UPDATE lista_runs SET run_id = gen_random_uuid() WHERE run_id IS NULL;")
     except Exception:
-        try:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
-            cur.execute("UPDATE lista_runs SET run_id = uuid_generate_v4() WHERE run_id IS NULL;")
-        except Exception:
-            pass
+        pass
 
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_runs_run_id ON lista_runs (run_id) WHERE run_id IS NOT NULL;")
 
@@ -169,10 +163,20 @@ class handler(BaseHTTPRequestHandler):
                     r2_key_archive = (row.get("r2_key_archive") or "").strip()
                     r2_key_input = (row.get("r2_key_input_pdf") or "").strip()
 
-                    if not r2_key_input:
-                        if not r2_key_archive:
-                            return _send_json(self, 500, {"error": "Run não possui r2_key_archive nem r2_key_input_pdf"})
+                    # Caso: run legado/bugado (salvo sem R2)
+                    if not r2_key_archive and not r2_key_input:
+                        return _send_json(
+                            self,
+                            409,
+                            {
+                                "error": "Run não possui r2_key_archive nem r2_key_input_pdf",
+                                "hint": "Este run foi salvo sem upload no R2 (ou falhou). Apague este run no histórico ou gere novamente a cotação para criar um novo arquivamento.",
+                                "run_id": str(row.get("run_id") or row.get("id")),
+                            },
+                        )
 
+                    # Se não tiver input.pdf salvo, tenta extrair do archive.zip e gravar no R2
+                    if not r2_key_input and r2_key_archive:
                         bio = io.BytesIO()
                         s3.download_fileobj(bucket, r2_key_archive, bio)
                         bio.seek(0)
@@ -208,18 +212,22 @@ class handler(BaseHTTPRequestHandler):
                         ExpiresIn=int(os.environ.get("R2_PRESIGN_EXPIRES", "3600")),
                     )
 
-                    return _send_json(self, 200, {
-                        "run_id": str(row.get("run_id") or row.get("id")),
-                        "numero_lista": row.get("numero_lista"),
-                        "nome_lista": row.get("nome_lista"),
-                        "responsavel": row.get("responsavel"),
-                        "processo_sei": row.get("processo_sei"),
-                        "salvo_em": str(row.get("salvo_em")),
-                        "ultima_edicao_em": str(row.get("ultima_edicao_em")),
-                        "created_at_run": str(row.get("created_at")),
-                        "input_presigned_url": input_url,
-                        "payload_json": row.get("payload_json") or {},
-                    })
+                    return _send_json(
+                        self,
+                        200,
+                        {
+                            "run_id": str(row.get("run_id") or row.get("id")),
+                            "numero_lista": row.get("numero_lista"),
+                            "nome_lista": row.get("nome_lista"),
+                            "responsavel": row.get("responsavel"),
+                            "processo_sei": row.get("processo_sei"),
+                            "salvo_em": str(row.get("salvo_em")),
+                            "ultima_edicao_em": str(row.get("ultima_edicao_em")),
+                            "created_at_run": str(row.get("created_at")),
+                            "input_presigned_url": input_url,
+                            "payload_json": row.get("payload_json") or {},
+                        },
+                    )
 
         except Exception as e:
             return _send_json(self, 500, {"error": str(e), "trace": traceback.format_exc()})
