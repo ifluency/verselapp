@@ -20,10 +20,18 @@ function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+function synthEmail(loginId: string): string {
+  // Como o schema legado exige email NOT NULL UNIQUE:
+  // - se tiver ADMIN_EMAIL, usa ele
+  // - se loginId for email, usa ele
+  // - senão cria um email sintético estável (evita conflito)
+  if (loginId.includes("@")) return loginId.toLowerCase();
+  return `${loginId.toLowerCase()}@local.invalid`;
+}
+
 async function ensureUsersSchema() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL não configurada.");
 
-  // Tabela base (legado com email obrigatório)
   await sql/* sql */ `
     CREATE TABLE IF NOT EXISTS app_users (
       id text PRIMARY KEY,
@@ -36,13 +44,9 @@ async function ensureUsersSchema() {
     )
   `;
 
-  // Migração leve: username
   await sql/* sql */ `ALTER TABLE app_users ADD COLUMN IF NOT EXISTS username text`;
-
-  // Backfill: se username estiver vazio, usa email
   await sql/* sql */ `UPDATE app_users SET username = email WHERE username IS NULL`;
 
-  // Índices
   await sql/* sql */ `CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users (email)`;
   await sql/* sql */ `CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_username_lower ON app_users (lower(username))`;
 }
@@ -51,6 +55,8 @@ async function ensureUsersSchema() {
  * Bootstrap do admin:
  * - ADMIN_USERNAME + ADMIN_PASSWORD (recomendado)
  * - ADMIN_EMAIL continua aceito como fallback
+ * Regra importante:
+ * - Se o email já existir, atualiza o usuário existente para ser admin e/ou define username.
  */
 async function ensureBootstrapAdmin() {
   await ensureUsersSchema();
@@ -60,22 +66,62 @@ async function ensureBootstrapAdmin() {
   const pass = process.env.ADMIN_PASSWORD || "";
   const name = (process.env.ADMIN_NAME || "Admin").trim();
 
-  const loginId = usernameEnv || emailEnv;
+  const loginId = usernameEnv || emailEnv; // login preferencial
   if (!loginId || !pass) return;
 
-  const existing = (await sql/* sql */ `
+  const hash = await bcrypt.hash(pass, 10);
+
+  // 1) Procura por username/email = loginId
+  const byLogin = (await sql/* sql */ `
     SELECT id, email, username, name, role, password_hash
     FROM app_users
     WHERE lower(username) = ${loginId} OR lower(email) = ${loginId}
     LIMIT 1
   `) as DbUser[];
 
-  if (existing.length > 0) return;
+  if (byLogin.length > 0) {
+    const u = byLogin[0];
 
-  const hash = await bcrypt.hash(pass, 10);
+    // garante username, role admin, nome e senha atualizada
+    await sql/* sql */ `
+      UPDATE app_users
+      SET
+        username = COALESCE(username, ${loginId}),
+        role = 'admin',
+        name = COALESCE(name, ${name}),
+        password_hash = ${hash}
+      WHERE id = ${u.id}
+    `;
+    return;
+  }
 
-  // Como email é obrigatório no schema legado, garantimos um valor
-  const emailToStore = (emailEnv || loginId).toLowerCase();
+  // 2) Se tiver ADMIN_EMAIL, pode existir usuário com esse email (mesmo que loginId seja outro)
+  if (emailEnv) {
+    const byEmail = (await sql/* sql */ `
+      SELECT id, email, username, name, role, password_hash
+      FROM app_users
+      WHERE lower(email) = ${emailEnv}
+      LIMIT 1
+    `) as DbUser[];
+
+    if (byEmail.length > 0) {
+      const u = byEmail[0];
+
+      await sql/* sql */ `
+        UPDATE app_users
+        SET
+          username = ${loginId},
+          role = 'admin',
+          name = COALESCE(name, ${name}),
+          password_hash = ${hash}
+        WHERE id = ${u.id}
+      `;
+      return;
+    }
+  }
+
+  // 3) Não existe: cria novo
+  const emailToStore = emailEnv ? emailEnv : synthEmail(loginId);
 
   await sql/* sql */ `
     INSERT INTO app_users (id, email, username, name, role, password_hash)
@@ -164,11 +210,9 @@ export const {
     authorized({ auth, request }) {
       const { pathname } = request.nextUrl;
 
-      // público
       if (pathname === "/") return true;
       if (pathname.startsWith("/api/auth")) return true;
 
-      // assets/internals
       if (pathname.startsWith("/_next")) return true;
       if (pathname === "/favicon.ico") return true;
 
