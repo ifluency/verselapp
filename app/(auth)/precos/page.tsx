@@ -2,18 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-
-
-async function readJsonSafe(res: Response): Promise<{ ok: boolean; data: any; rawText?: string }> {
-  // Always read as text first, then try to parse JSON (prevents "Unexpected token <" crashes).
-  const rawText = await res.text();
-  try {
-    const data = JSON.parse(rawText);
-    return { ok: true, data, rawText };
-  } catch {
-    return { ok: false, data: null, rawText };
-  }
-}
 type PreviewItem = {
   item: string;
   catmat: string;
@@ -143,6 +131,16 @@ const LAST_LIC_LINE_STYLE: React.CSSProperties = {
 };
 
 
+
+async function readJsonSafe(res: Response): Promise<{ ok: boolean; data: any; text: string; status: number; contentType: string }>{
+  const status = res.status;
+  const contentType = res.headers.get("content-type") || "";
+  const text = await res.text();
+  if (contentType.includes("application/json")) {
+    try { return { ok: res.ok, data: JSON.parse(text), text, status, contentType }; } catch { return { ok: res.ok, data: null, text, status, contentType }; }
+  }
+  return { ok: res.ok, data: null, text, status, contentType };
+}
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>("");
@@ -443,8 +441,7 @@ useEffect(() => {
       });
       if (!res.ok) return;
 
-      const parsed = await readJsonSafe(res);
-    const data = parsed.ok ? parsed.data : null;
+      const data = await res.json();
       const byCatmat: Record<string, PncpUltimoInfo> = data?.by_catmat || {};
 
       const byItem: Record<string, PncpUltimoInfo> = {};
@@ -478,13 +475,12 @@ useEffect(() => {
     setPncpHistLoading(true);
     try {
       const res = await fetch(`/api/catmat_historico?catmat=${encodeURIComponent(c)}`);
-      const parsed = await readJsonSafe(res);
-      if (!res.ok || !parsed.ok) {
-        const msg = (parsed.rawText || "").trim();
+      if (!res.ok) {
+        const msg = await res.text();
         setPncpHistError(msg || "Falha ao consultar histórico.");
         return;
       }
-      const data = parsed.data;
+      const data = await res.json();
       setPncpHistRows((data.rows || []) as PncpHistoricoRow[]);
     } catch (e: any) {
       setPncpHistError(String(e));
@@ -512,10 +508,10 @@ async function startEditFromRun(runId: string) {
 
   try {
     const res = await fetch(`/api/archive?action=load&run_id=${encodeURIComponent(rid)}`);
-    const parsed = await readJsonSafe(res);
-    const data = parsed.ok ? parsed.data : null;
-    if (!res.ok || !parsed.ok) {
-      setStatus((data && data.error) ? `Falha ao carregar run: ${String(data.error)}` : (parsed.rawText ? `Falha ao carregar run: endpoint não retornou JSON. Resposta: ${String(parsed.rawText).slice(0,120)}...` : "Falha ao carregar run."));
+    const jr = await readJsonSafe(res);
+    const data = jr.data;
+    if (!res.ok) {
+      setStatus(data?.error ? `Falha ao carregar run: ${String(data.error)}` : `Falha ao carregar run (HTTP ${jr.status}). ${jr.text ? jr.text.slice(0,180) : ""}`);
       setIsHydratingEdit(false);
       hydratingEditRef.current = false;
       return;
@@ -575,13 +571,12 @@ async function loadPreview() {
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/preview", { method: "POST", body: form });
-      const parsed = await readJsonSafe(res);
-      if (!res.ok || !parsed.ok) {
-        const msg = (parsed.rawText || "").trim();
-        setStatus(`Falha ao gerar prévia: ${msg || res.statusText}`);
+      if (!res.ok) {
+        const msg = await res.text();
+        setStatus(`Falha ao gerar prévia: ${msg}`);
         return;
       }
-      const data = parsed.data;
+      const data = await res.json();
       const items = (data.items || []) as PreviewItem[];
       setPreview(items);
       // Consulta Neon (PNCP) para preencher automaticamente o "Último licitado" e mostrar contexto.
