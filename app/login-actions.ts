@@ -4,6 +4,13 @@
 import { signIn } from "../auth";
 import { redirect } from "next/navigation";
 
+function isNextRedirectError(e: any) {
+  return (
+    e?.message === "NEXT_REDIRECT" ||
+    (typeof e?.digest === "string" && e.digest.startsWith("NEXT_REDIRECT"))
+  );
+}
+
 /**
  * Login normal (form)
  */
@@ -14,7 +21,15 @@ export async function doLogin(formData: FormData) {
   try {
     await signIn("credentials", { login, password, redirectTo: "/precos" });
   } catch (e: any) {
-    console.error("LOGIN_FAILED", { message: e?.message, cause: e?.cause });
+    // Se for redirect do Next, não tratar como erro
+    if (isNextRedirectError(e)) throw e;
+
+    console.error("LOGIN_FAILED", {
+      message: e?.message,
+      name: e?.name,
+      cause: e?.cause,
+    });
+
     redirect("/?error=1");
   }
 }
@@ -22,10 +37,11 @@ export async function doLogin(formData: FormData) {
 /**
  * Login rápido (sem digitar), mas com autenticação REAL.
  * - Não expõe senha no client.
- * - Só habilita se ALLOW_QUICK_LOGIN=true e NODE_ENV != 'production'
+ * - Só habilita se ALLOW_QUICK_LOGIN=true e VERCEL_ENV != 'production'
  */
 export async function doQuickLogin() {
-  if (process.env.NODE_ENV === "production") {
+  const vercelEnv = (process.env.VERCEL_ENV || "").toLowerCase();
+  if (vercelEnv === "production") {
     redirect("/?error=quick_login_disabled");
   }
   if ((process.env.ALLOW_QUICK_LOGIN || "").toLowerCase() !== "true") {
@@ -42,7 +58,14 @@ export async function doQuickLogin() {
   try {
     await signIn("credentials", { login, password, redirectTo: "/precos" });
   } catch (e: any) {
-    console.error("QUICK_LOGIN_FAILED", { message: e?.message, cause: e?.cause });
+    if (isNextRedirectError(e)) throw e;
+
+    console.error("QUICK_LOGIN_FAILED", {
+      message: e?.message,
+      name: e?.name,
+      cause: e?.cause,
+    });
+
     redirect("/?error=1");
   }
 }
