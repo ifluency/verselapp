@@ -24,8 +24,21 @@ def _db_conn():
     return psycopg2.connect(dsn, sslmode="require")
 
 
+def _column_exists(cur, table: str, column: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+        LIMIT 1
+        """,
+        (table, column),
+    )
+    return cur.fetchone() is not None
+
+
 def _ensure_schema(cur):
-    # Create base tables if missing
+    # Create tables if missing (new installs)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS listas (
@@ -33,7 +46,9 @@ def _ensure_schema(cur):
             numero_lista TEXT UNIQUE NOT NULL,
             nome_lista TEXT,
             responsavel TEXT,
-            processo_sei TEXT
+            processo_sei TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
     )
@@ -42,7 +57,8 @@ def _ensure_schema(cur):
         CREATE TABLE IF NOT EXISTS lista_runs (
             id BIGSERIAL PRIMARY KEY,
             lista_id BIGINT REFERENCES listas(id) ON DELETE CASCADE,
-            run_id UUID UNIQUE NOT NULL,
+            run_id UUID,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             r2_key_archive TEXT,
             r2_key_input_pdf TEXT,
             archive_size_bytes BIGINT,
@@ -52,13 +68,45 @@ def _ensure_schema(cur):
         """
     )
 
-    # Ensure expected columns exist even if schema came from older versions
+    # Migrate/patch existing installs (tables exist but missing columns)
+    # listas columns
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS nome_lista TEXT;")
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS responsavel TEXT;")
+    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS processo_sei TEXT;")
     cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+
+    # lista_runs columns
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS lista_id BIGINT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_id UUID;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_input_pdf TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_size_bytes BIGINT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_sha256 TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS payload_json JSONB;")
+
+    # If old column names exist, copy forward (best-effort)
+    if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
+        cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
+    if _column_exists(cur, "lista_runs", "archive_size_byte") and _column_exists(cur, "lista_runs", "archive_size_bytes"):
+        cur.execute("UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);")
+
+    # Ensure UUID generator exists and backfill run_id if missing
+    try:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        cur.execute("UPDATE lista_runs SET run_id = gen_random_uuid() WHERE run_id IS NULL;")
+    except Exception:
+        try:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+            cur.execute("UPDATE lista_runs SET run_id = uuid_generate_v4() WHERE run_id IS NULL;")
+        except Exception:
+            # Last resort: leave run_id null; UI will fallback to id
+            pass
 
     # Indexes
     cur.execute("CREATE INDEX IF NOT EXISTS idx_lista_runs_lista_id_created ON lista_runs (lista_id, created_at DESC);")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_runs_run_id ON lista_runs (run_id) WHERE run_id IS NOT NULL;")
 
 
 class handler(BaseHTTPRequestHandler):
@@ -81,7 +129,7 @@ class handler(BaseHTTPRequestHandler):
                         where = "WHERE l.numero_lista ILIKE %s"
                         params.append(f"%{filtro_lista}%")
 
-                    # One row per LISTA, showing the latest run id + size
+                    # Use latest run per lista. If run_id is null (legacy), fallback to id::text.
                     cur.execute(
                         f"""
                         SELECT
@@ -91,18 +139,18 @@ class handler(BaseHTTPRequestHandler):
                             l.processo_sei,
                             l.created_at AS salvo_em,
                             l.updated_at AS ultima_edicao_em,
-                            r.run_id AS latest_run_id,
+                            COALESCE(r.run_id::text, r.id::text) AS latest_run_id,
                             COALESCE(r.archive_size_bytes, 0) AS tamanho_bytes
                         FROM listas l
                         LEFT JOIN LATERAL (
-                            SELECT run_id, archive_size_bytes
+                            SELECT id, run_id, archive_size_bytes
                             FROM lista_runs
                             WHERE lista_id = l.id
-                            ORDER BY created_at DESC
+                            ORDER BY created_at DESC NULLS LAST, id DESC
                             LIMIT 1
                         ) r ON TRUE
                         {where}
-                        ORDER BY l.updated_at DESC
+                        ORDER BY l.updated_at DESC NULLS LAST, l.id DESC
                         LIMIT 500
                         """,
                         tuple(params),
