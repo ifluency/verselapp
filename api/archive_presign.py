@@ -86,28 +86,18 @@ def _ensure_schema(cur):
         """
     )
 
-    # Patch legacy schemas
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_id UUID;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
-    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_size_bytes BIGINT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
-    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
-    cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
 
     if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
         cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
-    if _column_exists(cur, "lista_runs", "archive_size_byte") and _column_exists(cur, "lista_runs", "archive_size_bytes"):
-        cur.execute("UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);")
 
     try:
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         cur.execute("UPDATE lista_runs SET run_id = gen_random_uuid() WHERE run_id IS NULL;")
     except Exception:
-        try:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
-            cur.execute("UPDATE lista_runs SET run_id = uuid_generate_v4() WHERE run_id IS NULL;")
-        except Exception:
-            pass
+        pass
 
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_runs_run_id ON lista_runs (run_id) WHERE run_id IS NOT NULL;")
 
@@ -152,7 +142,11 @@ class handler(BaseHTTPRequestHandler):
 
                     key = (row.get("r2_key_archive") or "").strip()
                     if not key:
-                        return _send_json(self, 500, {"error": "Run não possui r2_key_archive"})
+                        return _send_json(
+                            self,
+                            409,
+                            {"error": "Este arquivamento não possui arquivos no R2 (r2_key_archive vazio). Apague este run ou gere novamente."},
+                        )
 
             url = s3.generate_presigned_url(
                 "get_object",
