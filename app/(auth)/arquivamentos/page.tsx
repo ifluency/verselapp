@@ -11,8 +11,6 @@ type Row = {
   ultima_edicao_em: string | null;
   latest_run_id: string | null;
   tamanho_bytes: number | null;
-  r2_key_archive: string | null;
-  r2_key_input_pdf: string | null;
 };
 
 function fmtDate(s?: string | null) {
@@ -52,7 +50,13 @@ function IconDownload() {
 function IconPencil() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 20h9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M12 20h9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
       <path
         d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5z"
         fill="none"
@@ -60,17 +64,6 @@ function IconPencil() {
         strokeWidth="2"
         strokeLinejoin="round"
       />
-    </svg>
-  );
-}
-
-function IconTrash() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 6h18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M8 6V4h8v2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M6 6l1 16h10l1-16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }
@@ -86,7 +79,7 @@ export default function ArquivamentosPage() {
     setStatus("");
     try {
       const qs = filtroLista ? `?lista=${encodeURIComponent(filtroLista)}` : "";
-      const res = await fetch(`/api/archive_runs${qs}`);
+      const res = await fetch(`/api/archive?action=runs${qs}`);
       const data = await res.json();
       if (!res.ok) {
         setStatus(data?.error ? String(data.error) : "Falha ao carregar.");
@@ -113,13 +106,14 @@ export default function ArquivamentosPage() {
 
     setStatus("Gerando link de download...");
     try {
-      const res = await fetch(`/api/archive_presign?run_id=${encodeURIComponent(runId)}`);
+      const res = await fetch(`/api/archive?action=presign?run_id=${encodeURIComponent(runId)}`);
       const data = await res.json();
       if (!res.ok) {
         setStatus(data?.error ? String(data.error) : "Falha ao presign.");
         return;
       }
-      window.open(data.url as string, "_blank", "noopener,noreferrer");
+      const url = data.url as string;
+      window.open(url, "_blank", "noopener,noreferrer");
       setStatus("Download iniciado.");
     } catch (e: any) {
       setStatus(String(e));
@@ -130,25 +124,6 @@ export default function ArquivamentosPage() {
     const ok = window.confirm("Deseja mesmo editar esta cotação? Isso abrirá a prévia automaticamente.");
     if (!ok) return;
     window.location.href = `/precos?edit_run_id=${encodeURIComponent(runId)}`;
-  }
-
-  async function deleteRun(runId: string) {
-    const ok = window.confirm("Deseja mesmo APAGAR este arquivamento? Esta ação não pode ser desfeita.");
-    if (!ok) return;
-
-    setStatus("Apagando arquivamento...");
-    try {
-      const res = await fetch(`/api/archive_delete?run_id=${encodeURIComponent(runId)}`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) {
-        setStatus(data?.error ? String(data.error) : "Falha ao apagar.");
-        return;
-      }
-      setStatus("Arquivamento apagado.");
-      await load();
-    } catch (e: any) {
-      setStatus(String(e));
-    }
   }
 
   return (
@@ -188,7 +163,7 @@ export default function ArquivamentosPage() {
                   key={h}
                   style={{
                     border: "1px solid #ddd",
-                    padding: "8px 8px",
+                    padding: "10px 8px",
                     background: "#f7f7f7",
                     textAlign: "left",
                     fontWeight: 800,
@@ -202,46 +177,33 @@ export default function ArquivamentosPage() {
           <tbody>
             {rows.map((r, idx) => {
               const runId = r.latest_run_id || "";
-              const hasArchive = Boolean((r.r2_key_archive || "").trim());
-              const canEdit = hasArchive || Boolean((r.r2_key_input_pdf || "").trim());
-
               return (
                 <tr key={`${r.numero_lista}-${idx}`} style={{ background: idx % 2 === 0 ? "#fff" : "#f4f4f4" }}>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.numero_lista}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.nome_lista || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.responsavel || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.processo_sei || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtDate(r.salvo_em)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtDate(r.ultima_edicao_em)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtBytes(r.tamanho_bytes)}</td>
-
-                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.numero_lista}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.nome_lista || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.responsavel || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.processo_sei || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtDate(r.salvo_em)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtDate(r.ultima_edicao_em)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtBytes(r.tamanho_bytes)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                       <button
-                        title={hasArchive ? "Baixar .zip" : "Sem arquivo arquivado no R2"}
+                        title="Baixar .zip"
                         onClick={() => runId && presignAndDownload(runId)}
-                        disabled={!runId || !hasArchive}
+                        disabled={!runId}
                         style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
                       >
                         <IconDownload />
                       </button>
 
                       <button
-                        title={canEdit ? "Editar cotação" : "Sem arquivos no R2 para reabrir"}
+                        title="Editar cotação"
                         onClick={() => runId && editRun(runId)}
-                        disabled={!runId || !canEdit}
-                        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
-                      >
-                        <IconPencil />
-                      </button>
-
-                      <button
-                        title="Apagar arquivamento"
-                        onClick={() => runId && deleteRun(runId)}
                         disabled={!runId}
                         style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
                       >
-                        <IconTrash />
+                        <IconPencil />
                       </button>
                     </div>
                   </td>
