@@ -52,13 +52,7 @@ function IconDownload() {
 function IconPencil() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 20h9"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
+      <path d="M12 20h9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       <path
         d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5z"
         fill="none"
@@ -68,6 +62,7 @@ function IconPencil() {
       />
     </svg>
   );
+}
 
 function IconTrash() {
   return (
@@ -80,9 +75,6 @@ function IconTrash() {
   );
 }
 
-
-}
-
 export default function ArquivamentosPage() {
   const [items, setItems] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
@@ -93,6 +85,7 @@ export default function ArquivamentosPage() {
     setLoading(true);
     setStatus("");
     try {
+      // base always starts with '?action=runs', filter comes as '&lista=...'
       const qs = filtroLista ? `&lista=${encodeURIComponent(filtroLista)}` : "";
       const res = await fetch(`/api/archive?action=runs${qs}`);
       const data = await res.json();
@@ -127,8 +120,7 @@ export default function ArquivamentosPage() {
         setStatus(data?.error ? String(data.error) : "Falha ao presign.");
         return;
       }
-      const url = data.url as string;
-      window.open(url, "_blank", "noopener,noreferrer");
+      window.open(data.url as string, "_blank", "noopener,noreferrer");
       setStatus("Download iniciado.");
     } catch (e: any) {
       setStatus(String(e));
@@ -197,7 +189,7 @@ export default function ArquivamentosPage() {
                   key={h}
                   style={{
                     border: "1px solid #ddd",
-                    padding: "10px 8px",
+                    padding: "8px 8px",
                     background: "#f7f7f7",
                     textAlign: "left",
                     fontWeight: 800,
@@ -211,19 +203,21 @@ export default function ArquivamentosPage() {
           <tbody>
             {rows.map((r, idx) => {
               const runId = r.latest_run_id || "";
-              const hasArchive = Boolean(((r as any).r2_key_archive || "").trim());
-              const canEdit = hasArchive || Boolean(((r as any).r2_key_input_pdf || "").trim());
+              const hasArchive = Boolean((r.r2_key_archive || "").trim());
+              const canEdit = hasArchive || Boolean((r.r2_key_input_pdf || "").trim());
+
               return (
                 <tr key={`${r.numero_lista}-${idx}`} style={{ background: idx % 2 === 0 ? "#fff" : "#f4f4f4" }}>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.numero_lista}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.nome_lista || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.responsavel || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.processo_sei || ""}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtDate(r.salvo_em)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtDate(r.ultima_edicao_em)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{fmtBytes(r.tamanho_bytes)}</td>
-                  <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.numero_lista}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.nome_lista || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.responsavel || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{r.processo_sei || ""}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtDate(r.salvo_em)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtDate(r.ultima_edicao_em)}</td>
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>{fmtBytes(r.tamanho_bytes)}</td>
+
+                  <td style={{ border: "1px solid #ddd", padding: "8px 8px" }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <button
                         title={hasArchive ? "Baixar .zip" : "Sem arquivo arquivado no R2"}
                         onClick={() => runId && presignAndDownload(runId)}
