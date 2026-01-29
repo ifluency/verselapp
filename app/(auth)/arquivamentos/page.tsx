@@ -11,6 +11,8 @@ type Row = {
   ultima_edicao_em: string | null;
   latest_run_id: string | null;
   tamanho_bytes: number | null;
+  r2_key_archive?: string | null;
+  r2_key_input_pdf?: string | null;
 };
 
 function fmtDate(s?: string | null) {
@@ -66,6 +68,19 @@ function IconPencil() {
       />
     </svg>
   );
+
+function IconTrash() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 6h18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M8 6V4h8v2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M6 6l1 16h10l1-16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+
 }
 
 export default function ArquivamentosPage() {
@@ -126,6 +141,25 @@ export default function ArquivamentosPage() {
     window.location.href = `/precos?edit_run_id=${encodeURIComponent(runId)}`;
   }
 
+  async function deleteRun(runId: string) {
+    const ok = window.confirm("Deseja mesmo APAGAR este arquivamento? Esta ação não pode ser desfeita.");
+    if (!ok) return;
+
+    setStatus("Apagando arquivamento...");
+    try {
+      const res = await fetch(`/api/archive?action=delete&run_id=${encodeURIComponent(runId)}`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(data?.error ? String(data.error) : "Falha ao apagar.");
+        return;
+      }
+      setStatus("Arquivamento apagado.");
+      await load();
+    } catch (e: any) {
+      setStatus(String(e));
+    }
+  }
+
   return (
     <main style={{ maxWidth: "100%", margin: "12px auto", padding: "0 12px" }}>
       <h1 style={{ marginBottom: 8 }}>Arquivamentos</h1>
@@ -177,6 +211,8 @@ export default function ArquivamentosPage() {
           <tbody>
             {rows.map((r, idx) => {
               const runId = r.latest_run_id || "";
+              const hasArchive = Boolean(((r as any).r2_key_archive || "").trim());
+              const canEdit = hasArchive || Boolean(((r as any).r2_key_input_pdf || "").trim());
               return (
                 <tr key={`${r.numero_lista}-${idx}`} style={{ background: idx % 2 === 0 ? "#fff" : "#f4f4f4" }}>
                   <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>{r.numero_lista}</td>
@@ -189,21 +225,30 @@ export default function ArquivamentosPage() {
                   <td style={{ border: "1px solid #ddd", padding: "10px 8px" }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                       <button
-                        title="Baixar .zip"
+                        title={hasArchive ? "Baixar .zip" : "Sem arquivo arquivado no R2"}
                         onClick={() => runId && presignAndDownload(runId)}
-                        disabled={!runId}
+                        disabled={!runId || !hasArchive}
                         style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
                       >
                         <IconDownload />
                       </button>
 
                       <button
-                        title="Editar cotação"
+                        title={canEdit ? "Editar cotação" : "Sem arquivos no R2 para reabrir"}
                         onClick={() => runId && editRun(runId)}
-                        disabled={!runId}
+                        disabled={!runId || !canEdit}
                         style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
                       >
                         <IconPencil />
+                      </button>
+
+                      <button
+                        title="Apagar arquivamento"
+                        onClick={() => runId && deleteRun(runId)}
+                        disabled={!runId}
+                        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
+                      >
+                        <IconTrash />
                       </button>
                     </div>
                   </td>
