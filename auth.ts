@@ -1,3 +1,4 @@
+// auth.ts
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { neon } from "@neondatabase/serverless";
@@ -51,12 +52,13 @@ async function ensureBootstrapAdmin() {
 
   if (!email || !pass) return;
 
-  const rows = await sql<DbUser[]>/* sql */ `
+  const rows = (await sql/* sql */ `
     SELECT id, email, name, role, password_hash
     FROM app_users
     WHERE lower(email) = ${email}
     LIMIT 1
-  `;
+  `) as DbUser[];
+
   if (rows.length > 0) return;
 
   const hash = await bcrypt.hash(pass, 10);
@@ -95,12 +97,12 @@ export const {
         await ensureUsersSchema();
         await ensureBootstrapAdmin();
 
-        const rows = await sql<DbUser[]>/* sql */ `
+        const rows = (await sql/* sql */ `
           SELECT id, email, name, role, password_hash
           FROM app_users
           WHERE lower(email) = ${email}
           LIMIT 1
-        `;
+        `) as DbUser[];
 
         const user = rows[0];
         if (!user) return null;
