@@ -22,7 +22,7 @@ const sql = neon(process.env.DATABASE_URL || "");
 async function ensureUsersSchema() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL não configurada.");
 
-  await sql/* sql */`
+  await sql/* sql */ `
     CREATE TABLE IF NOT EXISTS app_users (
       id text PRIMARY KEY,
       email text UNIQUE NOT NULL,
@@ -33,7 +33,7 @@ async function ensureUsersSchema() {
       last_login_at timestamptz
     )
   `;
-  await sql/* sql */`CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users (email)`;
+  await sql/* sql */ `CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users (email)`;
 }
 
 /**
@@ -51,7 +51,7 @@ async function ensureBootstrapAdmin() {
 
   if (!email || !pass) return;
 
-  const rows = await sql<DbUser[]>/* sql */`
+  const rows = await sql<DbUser[]>/* sql */ `
     SELECT id, email, name, role, password_hash
     FROM app_users
     WHERE lower(email) = ${email}
@@ -60,13 +60,18 @@ async function ensureBootstrapAdmin() {
   if (rows.length > 0) return;
 
   const hash = await bcrypt.hash(pass, 10);
-  await sql/* sql */`
+  await sql/* sql */ `
     INSERT INTO app_users (id, email, name, role, password_hash)
     VALUES (${crypto.randomUUID()}, ${email}, ${name}, 'admin', ${hash})
   `;
 }
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+export const {
+  handlers: { GET, POST },
+  auth,
+  signIn,
+  signOut,
+} = NextAuth({
   // jwt (sem adapter) -> middleware não precisa bater no DB
   session: { strategy: "jwt" },
 
@@ -90,7 +95,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         await ensureUsersSchema();
         await ensureBootstrapAdmin();
 
-        const rows = await sql<DbUser[]>/* sql */`
+        const rows = await sql<DbUser[]>/* sql */ `
           SELECT id, email, name, role, password_hash
           FROM app_users
           WHERE lower(email) = ${email}
@@ -105,7 +110,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         // atualiza last_login_at (best-effort)
         try {
-          await sql/* sql */`UPDATE app_users SET last_login_at = now() WHERE id = ${user.id}`;
+          await sql/* sql */ `UPDATE app_users SET last_login_at = now() WHERE id = ${user.id}`;
         } catch {
           // ignore
         }
