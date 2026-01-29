@@ -97,6 +97,7 @@ def _ensure_schema(cur):
     cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cur.execute("ALTER TABLE listas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
 
+    # lista_runs columns used across versions (some older patches used different names)
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_id UUID;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive TEXT;")
@@ -105,13 +106,39 @@ def _ensure_schema(cur):
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_sha256 TEXT;")
     cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS payload_json JSONB;")
 
-    # Copy forward older column names if they exist
-    if _column_exists(cur, "lista_runs", "r2_key") and _column_exists(cur, "lista_runs", "r2_key_archive"):
-        cur.execute("UPDATE lista_runs SET r2_key_archive = COALESCE(r2_key_archive, r2_key);")
-    if _column_exists(cur, "lista_runs", "archive_size_byte") and _column_exists(cur, "lista_runs", "archive_size_bytes"):
-        cur.execute("UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);")
+    # Older/alternate schema (generate.py) columns
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ DEFAULT NOW();")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS run_number INTEGER;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key_archive_zip TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS presigned_get_url TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS sha256_zip TEXT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS size_bytes BIGINT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS archive_size_byte BIGINT;")
+    cur.execute("ALTER TABLE lista_runs ADD COLUMN IF NOT EXISTS r2_key TEXT;")
 
-    # Backfill run_id if possible (best-effort)
+    # Copy forward older column names if they exist (keep it idempotent)
+    if _column_exists(cur, "lista_runs", "r2_key_archive"):
+        # Prefer new field; if empty, fill from older equivalents
+        if _column_exists(cur, "lista_runs", "r2_key_archive_zip"):
+            cur.execute(
+                "UPDATE lista_runs SET r2_key_archive = COALESCE(NULLIF(r2_key_archive,''), NULLIF(r2_key_archive_zip,''));"
+            )
+        if _column_exists(cur, "lista_runs", "r2_key"):
+            cur.execute(
+                "UPDATE lista_runs SET r2_key_archive = COALESCE(NULLIF(r2_key_archive,''), NULLIF(r2_key,''));"
+            )
+
+    if _column_exists(cur, "lista_runs", "archive_size_bytes"):
+        if _column_exists(cur, "lista_runs", "size_bytes"):
+            cur.execute(
+                "UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, size_bytes);"
+            )
+        if _column_exists(cur, "lista_runs", "archive_size_byte"):
+            cur.execute(
+                "UPDATE lista_runs SET archive_size_bytes = COALESCE(archive_size_bytes, archive_size_byte);"
+            )
+
+    # Backfill run_id if possible (best-effort). This is only for deployments where id is BIGSERIAL and run_id is needed.
     try:
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         cur.execute("UPDATE lista_runs SET run_id = gen_random_uuid() WHERE run_id IS NULL;")
@@ -124,6 +151,7 @@ def _ensure_schema(cur):
 
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_runs_run_id ON lista_runs (run_id) WHERE run_id IS NOT NULL;")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_lista_runs_lista_id_created ON lista_runs (lista_id, created_at DESC);")
+
 
 
 def _action_runs(cur, filtro_lista: str):
@@ -143,15 +171,25 @@ def _action_runs(cur, filtro_lista: str):
             l.created_at AS salvo_em,
             l.updated_at AS ultima_edicao_em,
             COALESCE(r.run_id::text, r.id::text) AS latest_run_id,
-            COALESCE(r.archive_size_bytes, 0) AS tamanho_bytes,
-            COALESCE(r.r2_key_archive, '') AS r2_key_archive,
-            COALESCE(r.r2_key_input_pdf, '') AS r2_key_input_pdf
+            COALESCE(r.archive_size_bytes, r.size_bytes, 0) AS tamanho_bytes,
+            COALESCE(NULLIF(r.r2_key_archive,''), NULLIF(r.r2_key_archive_zip,''), NULLIF(r.r2_key,''), '') AS r2_key_archive,
+            COALESCE(NULLIF(r.r2_key_input_pdf,''), '') AS r2_key_input_pdf
         FROM listas l
         LEFT JOIN LATERAL (
-            SELECT id, run_id, archive_size_bytes, r2_key_archive, r2_key_input_pdf
+            SELECT
+                id,
+                run_id,
+                archive_size_bytes,
+                size_bytes,
+                r2_key_archive,
+                r2_key_archive_zip,
+                r2_key,
+                r2_key_input_pdf,
+                created_at,
+                saved_at
             FROM lista_runs
             WHERE lista_id = l.id
-            ORDER BY created_at DESC NULLS LAST, id DESC
+            ORDER BY COALESCE(created_at, saved_at) DESC NULLS LAST, id DESC
             LIMIT 1
         ) r ON TRUE
         {where}
@@ -161,6 +199,7 @@ def _action_runs(cur, filtro_lista: str):
         tuple(params),
     )
     return cur.fetchall() or []
+
 
 
 def _action_presign(conn, run_id_or_id: str):
@@ -176,10 +215,10 @@ def _action_presign(conn, run_id_or_id: str):
 
         cur.execute(
             """
-            SELECT r2_key_archive
+            SELECT COALESCE(NULLIF(r2_key_archive,''), NULLIF(r2_key_archive_zip,''), NULLIF(r2_key,'')) AS r2_key_archive
             FROM lista_runs
             WHERE (run_id::text = %s) OR (id::text = %s)
-            ORDER BY created_at DESC NULLS LAST, id DESC
+            ORDER BY COALESCE(created_at, saved_at) DESC NULLS LAST, id DESC
             LIMIT 1
             """,
             (run_id_or_id, run_id_or_id),
@@ -217,7 +256,10 @@ def _action_load(conn, run_id_or_id: str):
                 r.id,
                 r.run_id,
                 r.created_at,
+                r.saved_at,
                 r.r2_key_archive,
+                r.r2_key_archive_zip,
+                r.r2_key,
                 r.r2_key_input_pdf,
                 r.payload_json,
                 l.numero_lista,
@@ -229,7 +271,7 @@ def _action_load(conn, run_id_or_id: str):
             FROM lista_runs r
             JOIN listas l ON l.id = r.lista_id
             WHERE (r.run_id::text = %s) OR (r.id::text = %s)
-            ORDER BY r.created_at DESC NULLS LAST, r.id DESC
+            ORDER BY COALESCE(r.created_at, r.saved_at) DESC NULLS LAST, r.id DESC
             LIMIT 1
             """,
             (run_id_or_id, run_id_or_id),
@@ -239,6 +281,8 @@ def _action_load(conn, run_id_or_id: str):
             return 404, {"error": "run_id não encontrado"}
 
         r2_key_archive = (row.get("r2_key_archive") or "").strip()
+        if not r2_key_archive:
+            r2_key_archive = (row.get("r2_key_archive_zip") or "").strip() or (row.get("r2_key") or "").strip()
         r2_key_input = (row.get("r2_key_input_pdf") or "").strip()
 
         # Legacy/failed runs saved without R2
@@ -310,10 +354,19 @@ def _action_delete(conn, run_id_or_id: str):
 
         cur.execute(
             """
-            SELECT id, lista_id, COALESCE(run_id::text, id::text) AS rid, r2_key_archive, r2_key_input_pdf
+            SELECT
+                id,
+                lista_id,
+                COALESCE(run_id::text, id::text) AS rid,
+                r2_key_archive,
+                r2_key_archive_zip,
+                r2_key,
+                r2_key_input_pdf,
+                created_at,
+                saved_at
             FROM lista_runs
             WHERE (run_id::text = %s) OR (id::text = %s)
-            ORDER BY created_at DESC NULLS LAST, id DESC
+            ORDER BY COALESCE(created_at, saved_at) DESC NULLS LAST, id DESC
             LIMIT 1
             """,
             (run_id_or_id, run_id_or_id),
@@ -324,7 +377,8 @@ def _action_delete(conn, run_id_or_id: str):
 
         # Delete objects from R2 (best-effort)
         if s3 and bucket:
-            for k in [row.get("r2_key_archive"), row.get("r2_key_input_pdf")]:
+            archive_key = (row.get("r2_key_archive") or "").strip() or (row.get("r2_key_archive_zip") or "").strip() or (row.get("r2_key") or "").strip()
+                        for k in [archive_key, row.get("r2_key_input_pdf")]:
                 k = (k or "").strip()
                 if k:
                     try:
@@ -379,7 +433,7 @@ class handler(BaseHTTPRequestHandler):
                     status, payload = _action_load(conn, run_id)
                 return _send_json(self, status, payload)
 
-            return _send_json(self, 400, {"error": "action inválida. Use: runs | presign | load"})
+            return _send_json(self, 400, {"error": "action inválida. Use: runs | presign | load | delete (POST)"})
 
         except Exception as e:
             return _send_json(self, 500, {"error": str(e), "trace": traceback.format_exc()})
