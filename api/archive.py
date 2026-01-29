@@ -162,7 +162,7 @@ def _action_runs(cur, filtro_lista: str):
             COALESCE(r.r2_key_input_pdf, '') AS r2_key_input_pdf
         FROM listas l
         LEFT JOIN LATERAL (
-            SELECT id, run_id, archive_size_bytes, r2_key_archive, r2_key_input_pdf
+            SELECT id, run_id, archive_size_bytes, r2_key_archive, r2_key_input_pdf, r2_key_archive_zip, r2_key
             FROM lista_runs
             WHERE lista_id = l.id
             ORDER BY created_at DESC NULLS LAST, id DESC
