@@ -497,7 +497,7 @@ async function startEditFromRun(runId: string) {
   hydratingEditRef.current = true;
 
   try {
-    const res = await fetch(`/api/archive?action=load?run_id=${encodeURIComponent(rid)}`);
+    const res = await fetch(`/api/archive?action=load&run_id=${encodeURIComponent(rid)}`);
     const data = await res.json();
     if (!res.ok) {
       setStatus(data?.error ? `Falha ao carregar run: ${String(data.error)}` : "Falha ao carregar run.");
